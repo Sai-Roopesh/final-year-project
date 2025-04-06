@@ -150,10 +150,21 @@ class MainAnalyzer:
                     "Correlation analysis skipped: Less than 2 symbols provided.")
 
         # 8. ML Prediction
-        if run_advanced.get('run_ml'):
-            logger.info("Running ML prediction...")
+        # Check if the new UI parameter exists and has models selected
+        selected_models_list = advanced_params.get('selected_models', [])
+        # Or check the run_ml_section flag if you used Option 1 in the UI
+        # run_ml_flag = run_advanced.get('run_ml_section', False)
+
+        # if run_ml_flag and selected_models_list: # If using Option 1
+        if selected_models_list:  # If using Option 2 (simpler)
+            logger.info(
+                f"Running ML prediction for models: {selected_models_list}...")
             results['ml_results'] = self.ml_predictor.machine_learning_prediction(
-                symbol)
+                symbol, selected_models_list  # Pass the list of selected models
+            )
+        else:
+            logger.info("ML prediction skipped (no models selected).")
+            results['ml_results'] = None  # Ensure it's None if not run
 
         # 9. ESG Scoring
         if run_advanced.get('run_esg'):

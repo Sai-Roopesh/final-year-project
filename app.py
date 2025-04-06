@@ -93,6 +93,7 @@ def main():
             'initial_investment': input_params['initial_investment'],
             'strategy': input_params['strategy'],
             'correlation_input': input_params['correlation_input'],
+            'selected_models': input_params['selected_models'],
         }
 
         # --- Execute Full Analysis Pipeline ---

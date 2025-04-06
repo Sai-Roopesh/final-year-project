@@ -68,10 +68,10 @@ class Forecasting:
                 # Merge and handle NaNs
                 prophet_df = pd.merge(
                     prophet_df, sentiment_prep, on='ds', how='left')
-                prophet_df['sentiment_score'].ffill(
-                    inplace=True)  # Forward fill sentiment
-                prophet_df['sentiment_score'].fillna(
-                    0.0, inplace=True)  # Fill initial NaNs
+                # Forward fill sentiment
+                prophet_df['sentiment_score'] = prophet_df['sentiment_score'].ffill()
+                prophet_df['sentiment_score'] = prophet_df['sentiment_score'].fillna(
+                    0.0)  # Fill initial NaNs
 
                 if prophet_df['sentiment_score'].notna().any():
                     last_sentiment = prophet_df['sentiment_score'].iloc[-1]

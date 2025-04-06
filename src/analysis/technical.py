@@ -53,7 +53,7 @@ class TechnicalAnalysis:
                             min_periods=config.RSI_PERIOD).mean()
         rs = avg_gain / avg_loss.replace(0, np.nan)
         df_tech['RSI'] = 100.0 - (100.0 / (1.0 + rs))
-        df_tech['RSI'].fillna(50, inplace=True)  # Fill initial NaNs
+        df_tech['RSI'] = df_tech['RSI'].fillna(50)  # Fill initial NaNs
 
         # MACD
         df_tech['MACD'] = df_tech['EMA_Fast'] - df_tech['EMA_Slow']

@@ -144,8 +144,20 @@ def display_sidebar(defaults: Dict[str, Any]) -> Dict[str, Any]:
             correlation_input = st.text_input(
                 "Correlation Symbols", correlation_input, key="txt_corr_sym", help="Comma-separated (at least 2)")
 
-        run_ml = st.checkbox("ML Prediction (Next Day)",
-                             value=defaults.get('run_ml', False), key="cb_ml")
+        run_ml_section = st.checkbox("Enable ML Predictions", value=defaults.get(
+            'run_ml_section', False), key="cb_ml_enable")
+        selected_models = []
+        if run_ml_section:
+            model_options = ["Random Forest", "Linear Regression",
+                             "Gradient Boosting"]  # Add more models here
+            selected_models = st.multiselect(
+                "Select ML Models for Prediction",
+                model_options,
+                # Default to RF if enabled
+                default=defaults.get('selected_models', ["Random Forest"]),
+                key="sel_ml_models"
+            )
+
         run_esg = st.checkbox("ESG Performance", value=defaults.get(
             'run_esg', False), key="cb_esg")
 
@@ -189,9 +201,10 @@ def display_sidebar(defaults: Dict[str, Any]) -> Dict[str, Any]:
         "strategy_display": strategy_display,
         "run_correlation": run_correlation,
         "correlation_input": correlation_input,
-        "run_ml": run_ml,
+        "run_ml_section": run_ml_section,
         "run_esg": run_esg,
         "show_dividends": show_dividends,
+        "selected_models": selected_models,
         # "show_earnings": show_earnings,
         "show_sector": show_sector,
         "show_tooltips": show_tooltips,

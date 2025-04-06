@@ -1,10 +1,11 @@
 # src/analysis/portfolio.py
 
-import streamlit as st  # Keep for cache decorator
+import streamlit as st
 import pandas as pd
 import numpy as np
 from typing import Optional, Dict, Any, List
 import yfinance as yf
+# Use relative imports for files within the same package
 from .. import config
 from .. import utils
 # Import DataFetcher class to use its methods
@@ -20,8 +21,7 @@ class Portfolio:
         """Requires a DataFetcher instance to get underlying data."""
         self.data_fetcher = data_fetcher
 
-    # --- Helper moved from DataFetcher ---
-    # This helper is specific to portfolio/correlation needs
+    # This helper is specific to portfolio/correlation needs and doesn't need caching itself
     def _fetch_portfolio_close_data(self, symbols: List[str], period: str = '1y') -> Optional[pd.DataFrame]:
         """ Fetches adjusted close data for multiple symbols into a single DataFrame."""
         logger.info(
@@ -34,8 +34,12 @@ class Portfolio:
             # auto_adjust handles splits/dividends
             all_data = yf.download(
                 symbols, period=period, auto_adjust=True, progress=False)
+
             if all_data.empty:
-                logger.warning(f"No portfolio data returned for: {symbols}")
+                logger.warning(
+                    f"No portfolio data returned by yfinance for: {symbols}")
+                st.warning(
+                    f"Could not retrieve data for portfolio symbols: {', '.join(symbols)}")
                 return None
 
             # Extract 'Close' prices
@@ -45,16 +49,37 @@ class Portfolio:
                 if isinstance(close_data, pd.Series):
                     # Convert Series to DataFrame
                     close_data = pd.DataFrame({symbols[0]: close_data})
+
                 # Drop columns that are all NaN (e.g., for symbols with no data)
                 close_data = close_data.dropna(axis=1, how='all')
+
                 if close_data.empty:
                     logger.warning(
                         f"All symbols had NaN close data for period {period}.")
+                    st.warning(
+                        f"Could not retrieve valid close data for any symbols in: {', '.join(symbols)}")
+                    return None
+                return close_data
+            # Handle case where 'Close' might be under a different name or structure
+            # Example for adjusted close if auto_adjust=False was used:
+            elif 'Adj Close' in all_data.columns:
+                logger.warning(
+                    "Using 'Adj Close' for portfolio data as 'Close' not found directly.")
+                close_data = all_data['Adj Close']
+                if isinstance(close_data, pd.Series):
+                    close_data = pd.DataFrame({symbols[0]: close_data})
+                close_data = close_data.dropna(axis=1, how='all')
+                if close_data.empty:
+                    logger.warning(
+                        f"All symbols had NaN Adj Close data for period {period}.")
+                    st.warning(
+                        f"Could not retrieve valid Adj Close data for any symbols in: {', '.join(symbols)}")
                     return None
                 return close_data
             else:
                 logger.error(
-                    f"Could not extract 'Close' data columns for portfolio: {symbols}.")
+                    f"Could not extract 'Close' or 'Adj Close' data columns for portfolio: {symbols}. Columns found: {all_data.columns}")
+                st.error("Unexpected data format received for portfolio analysis.")
                 return None
 
         except Exception as e:
@@ -63,19 +88,20 @@ class Portfolio:
             st.error(f"Error fetching data for portfolio/correlation analysis.")
             return None
 
+    # --- CORRECTED FIX: Replaced self with _self ---
     @st.cache_data(show_spinner="Simulating portfolio performance...")
-    def portfolio_simulation(self, symbols: List[str], initial_investment: float, investment_strategy: str = 'equal_weight') -> Optional[Dict[str, Any]]:
+    def portfolio_simulation(_self, symbols: List[str], initial_investment: float, investment_strategy: str = 'equal_weight') -> Optional[Dict[str, Any]]:
         """Runs a portfolio simulation based on historical data and strategy."""
         logger.info(
             f"Starting portfolio simulation for {symbols} using strategy '{investment_strategy}'.")
 
         # 1. Fetch Close Data (using internal helper)
-        portfolio_df = self._fetch_portfolio_close_data(
+        # Note: Accessing _self.data_fetcher and _self._fetch_portfolio_close_data
+        portfolio_df = _self._fetch_portfolio_close_data(
             symbols, period='1y')  # Use 1 year lookback
 
         if portfolio_df is None or portfolio_df.empty:
-            st.error(
-                "No valid historical data found for any portfolio symbols. Cannot run simulation.")
+            # Error/warning handled in _fetch_portfolio_close_data
             return None
 
         actual_symbols_used = list(portfolio_df.columns)
@@ -85,8 +111,8 @@ class Portfolio:
                 f"Excluded symbols with missing data: {', '.join(missing)}. Simulating with: {', '.join(actual_symbols_used)}.")
             logger.warning(
                 f"Portfolio simulation excluded: {', '.join(missing)}.")
-        if not actual_symbols_used:  # Should be caught above, but double-check
-            st.error("No symbols remain. Cannot simulate.")
+        if not actual_symbols_used:
+            st.error("No symbols remain after data fetch. Cannot simulate.")
             return None
 
         # 2. Calculate Returns
@@ -114,8 +140,9 @@ class Portfolio:
             with st.spinner("Fetching market caps for weighting..."):
                 for stock in actual_symbols_used:
                     try:
-                        # Use cached info fetcher method
-                        stock_info = self.data_fetcher.load_stock_info(stock)
+                        # Use cached info fetcher method from the passed instance
+                        # Note: Accessing _self.data_fetcher
+                        stock_info = _self.data_fetcher.load_stock_info(stock)
                         cap = stock_info.get(
                             'marketCap') if stock_info else None
                         if cap and isinstance(cap, (int, float)) and cap > 0:
@@ -160,7 +187,11 @@ class Portfolio:
         cumulative_value = cumulative_returns * initial_investment
         # Ensure start value is exactly initial investment
         if not cumulative_value.empty:
-            cumulative_value.iloc[0] = initial_investment
+            # Use .iloc[0] for position-based setting if index is not standard
+            try:
+                cumulative_value.iloc[0] = initial_investment
+            except Exception as e:
+                logger.error(f"Failed to set initial portfolio value: {e}")
 
         # Calculate annualized metrics (handle potential insufficient data)
         if len(daily_portfolio_returns) > 1:
@@ -170,6 +201,7 @@ class Portfolio:
             total_period_return = cumulative_returns.iloc[-1] - 1
             # Annualize return (approximation for periods != 1 year)
             num_years = len(daily_portfolio_returns) / trading_days
+            # Use geometric annualization: (Ending Value / Starting Value)^(1/NumYears) - 1
             annual_return = ((1 + total_period_return) **
                              (1/num_years)) - 1 if num_years > 0 else 0.0
             # Sharpe Ratio (assuming risk-free rate = 0)
@@ -190,17 +222,19 @@ class Portfolio:
             'symbols_used': actual_symbols_used
         }
 
+    # --- CORRECTED FIX: Replaced self with _self ---
     @st.cache_data(show_spinner="Calculating correlation matrix...")
-    def advanced_correlation_analysis(self, symbols: List[str]) -> Optional[pd.DataFrame]:
+    def advanced_correlation_analysis(_self, symbols: List[str]) -> Optional[pd.DataFrame]:
         """Calculates the correlation matrix of daily returns for given symbols."""
         logger.info(f"Starting correlation analysis for {symbols}.")
 
         # 1. Fetch Close Data
-        portfolio_df = self._fetch_portfolio_close_data(
+        # Note: Accessing _self._fetch_portfolio_close_data
+        portfolio_df = _self._fetch_portfolio_close_data(
             symbols, period='1y')  # Use 1 year lookback
 
         if portfolio_df is None or portfolio_df.empty:
-            st.error("No valid historical data found for correlation analysis.")
+            # Error/warning handled in _fetch_portfolio_close_data
             return None
 
         actual_symbols_used = list(portfolio_df.columns)
@@ -210,7 +244,8 @@ class Portfolio:
             return None
         if len(actual_symbols_used) < len(symbols):
             missing = set(symbols) - set(actual_symbols_used)
-            st.warning(f"Correlation excluded symbols: {', '.join(missing)}.")
+            st.warning(
+                f"Correlation excluded symbols with missing data: {', '.join(missing)}.")
 
         # 2. Calculate Returns and Correlation
         portfolio_df = portfolio_df.dropna()
@@ -218,7 +253,8 @@ class Portfolio:
             st.error("Insufficient overlapping data for correlation calculation.")
             return None
         returns_df = portfolio_df.pct_change().dropna()
-        if len(returns_df) < 2:  # Need >1 row after pct_change for correlation
+        # Need >1 row after pct_change for correlation
+        if len(returns_df) < 2:
             st.error(
                 "Insufficient returns data points (<2) to calculate correlations.")
             return None

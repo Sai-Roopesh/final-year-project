@@ -17,10 +17,7 @@ except LookupError:
         logger.error(f"Failed to download or import VADER lexicon: {e}")
         SentimentIntensityAnalyzer = None  # Ensure it's None if download fails
 
-
-from .. import config
-from .. import utils
-
+from src import config, utils
 logger = utils.logger
 
 
