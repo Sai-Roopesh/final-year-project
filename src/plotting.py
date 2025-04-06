@@ -9,7 +9,7 @@ from plotly.subplots import make_subplots
 from typing import Dict, Any, Optional, List
 import yfinance as yf
 from datetime import datetime  # Ensure datetime is imported
-
+from datetime import timedelta
 # Use relative imports within the src package
 from . import config
 from . import utils
@@ -365,62 +365,87 @@ def plot_technical_indicators(df: pd.DataFrame, indicators: Dict[str, bool]):
                     key="indicator_subplots")
 
 
-# --- Company Info Display ---
 def display_company_info(info: Optional[Dict[str, Any]], show_tooltips: bool):
+    """Displays company overview and key financial metrics."""
     logger.info(
         f"Displaying company info for {info.get('symbol', 'N/A') if info else 'N/A'}")
     if not info:
         st.warning("Company information unavailable.")
         return
+
     st.subheader(
         f"Company Overview: {info.get('longName', 'N/A')} ({info.get('symbol', 'N/A')})")
+    # --- Top Row Metrics ---
     cols_metrics = st.columns(4)
     with cols_metrics[0]:
         value = info.get('currentPrice') or info.get(
             'regularMarketPrice') or info.get('previousClose')
         st.metric("Last Price", f"${value:,.2f}" if pd.notna(
-            value) else "N/A", help="Most recent price.")
+            value) else "N/A", help="Most recent available closing or intraday price.")
     with cols_metrics[1]:
         mkt_cap = info.get('marketCap')
-        if mkt_cap and isinstance(mkt_cap, (int, float)):
-            if mkt_cap >= 1e12:  # Add Trillion
-                mkt_cap_str = f"${mkt_cap / 1e12:.2f}T"
-            elif mkt_cap >= 1e9:
-                mkt_cap_str = f"${mkt_cap / 1e9:.2f}B"
-            elif mkt_cap >= 1e6:
-                mkt_cap_str = f"${mkt_cap / 1e6:.2f}M"
-            else:
-                mkt_cap_str = f"${mkt_cap:,.0f}"
-        else:
-            mkt_cap_str = "N/A"
-        st.metric("Market Cap", mkt_cap_str, help="Total market value.")
+        # Use format_value for consistency
+        mkt_cap_str = format_value(mkt_cap) if mkt_cap else "N/A"
+        st.metric("Market Cap", mkt_cap_str,
+                  help="Total market value of all outstanding shares (Current Price * Shares Outstanding). Indicates company size.")
     with cols_metrics[2]:
         st.metric("Sector", info.get('sector', 'N/A'),
-                  help="Company's sector.")
+                  help="The broad economic sector the company belongs to.")
     with cols_metrics[3]:
         st.metric("Industry", info.get('industry', 'N/A'),
-                  help="Company's industry.")
+                  help="The specific industry group the company operates within.")
 
     st.markdown("---")
     st.subheader("Business Summary")
     st.info(info.get('longBusinessSummary', 'No business summary available.'))
     st.markdown("---")
 
+    # --- Expander for Detailed Metrics with Enhanced Tooltips ---
     with st.expander("Key Financial Metrics & Ratios", expanded=False):
+        # --- UPDATED metric_definitions with detailed tooltips ---
         metric_definitions = {
-            'trailingPE': ("Trailing P/E", "Price/Earnings (past 12m).", ".2f"), 'forwardPE': ("Forward P/E", "Price/Earnings (est. next year).", ".2f"),
-            'priceToBook': ("Price/Book (P/B)", "Market value vs. book value.", ".2f"), 'priceToSalesTrailing12Months': ("Price/Sales (P/S)", "Market value vs. revenue (past 12m).", ".2f"),
-            'enterpriseValue': ("Enterprise Value", "Total company value (market cap + debt - cash).", ",.0f"), 'enterpriseToRevenue': ("EV/Revenue", "EV vs. total revenue.", ".2f"), 'enterpriseToEbitda': ("EV/EBITDA", "EV vs. EBITDA.", ".2f"),
-            'dividendYield': ("Dividend Yield", "Annual dividend / share price.", ".2%"), 'payoutRatio': ("Payout Ratio", "% of earnings paid as dividends.", ".2%"), 'fiveYearAvgDividendYield': ("5Y Avg Div Yield", "Avg. dividend yield (5y).", ".2f"),
-            'profitMargins': ("Profit Margin", "Net income / revenue.", ".2%"), 'grossMargins': ("Gross Margin", "Gross profit / revenue.", ".2%"), 'operatingMargins': ("Operating Margin", "Operating income / revenue.", ".2%"), 'ebitdaMargins': ("EBITDA Margin", "EBITDA / revenue.", ".2%"),
-            'returnOnEquity': ("Return on Equity (ROE)", "Net income / shareholder equity.", ".2%"), 'returnOnAssets': ("Return on Assets (ROA)", "Net income / total assets.", ".2%"),
-            'trailingEps': ("Trailing EPS", "Earnings per share (past 12m).", ",.2f"), 'forwardEps': ("Forward EPS", "Est. earnings per share (next year).", ",.2f"),
-            'beta': ("Beta", "Volatility vs. market (S&P 500).", ".2f"),
-            'fiftyTwoWeekHigh': ("52 Week High", "Highest price (past 52w).", ",.2f"), 'fiftyTwoWeekLow': ("52 Week Low", "Lowest price (past 52w).", ",.2f"),
-            'volume': ("Volume", "Shares traded (latest session).", ",.0f"), 'averageVolume': ("Avg Volume (10 Day)", "Avg daily volume (10d).", ",.0f"),
-            'sharesOutstanding': ("Shares Outstanding", "Total number of shares.", ",.0f"), 'floatShares': ("Float Shares", "Shares available for public trading.", ",.0f"),
+            # Valuation Ratios
+            'trailingPE': ("Trailing P/E", "Price-to-Earnings ratio based on the last 12 months of actual reported earnings (EPS). Lower values may indicate undervaluation, higher values may indicate overvaluation or high growth expectations.", ".2f"),
+            'forwardPE': ("Forward P/E", "Price-to-Earnings ratio based on estimated earnings for the next 12 months. Reflects market expectations about future profitability.", ".2f"),
+            'priceToBook': ("Price/Book (P/B)", "Compares the company's market capitalization to its book value (Assets - Liabilities). A value below 1 might suggest undervaluation. Varies significantly by industry.", ".2f"),
+            'priceToSalesTrailing12Months': ("Price/Sales (P/S)", "Compares the company's market capitalization to its total revenue over the last 12 months. Useful for companies with negative earnings.", ".2f"),
+            'enterpriseValue': ("Enterprise Value (EV)", "Theoretical takeover price: Market Cap + Total Debt + Minority Interest + Preferred Shares - Cash & Cash Equivalents. Considered a more comprehensive valuation measure than market cap.", ",.0f"),
+            'enterpriseToRevenue': ("EV/Revenue", "Enterprise Value divided by total revenue (usually TTM). Compares total company value to its sales generation.", ".2f"),
+            'enterpriseToEbitda': ("EV/EBITDA", "Enterprise Value divided by Earnings Before Interest, Taxes, Depreciation, and Amortization. Common valuation metric that removes effects of financing and accounting decisions.", ".2f"),
+
+            # Dividend Metrics
+            'dividendYield': ("Dividend Yield", "Annual dividend per share divided by the current share price. Expressed as a percentage. Indicates the return from dividends relative to the price.", ".2%"),
+            'payoutRatio': ("Payout Ratio", "Proportion of net income paid out as dividends to shareholders. A very high ratio might indicate dividends are unsustainable if earnings fall.", ".2%"),
+            # yfinance usually provides this as a raw number (e.g., 1.5 for 1.5%)
+            'fiveYearAvgDividendYield': ("5Y Avg Div Yield", "The average dividend yield over the past five years. Provides historical context for the current yield.", ".2f"),
+
+            # Profitability & Margins
+            'profitMargins': ("Profit Margin (Net)", "Net Income divided by Revenue (usually TTM). Shows the percentage of revenue remaining as profit after all expenses.", ".2%"),
+            'grossMargins': ("Gross Margin", "Gross Profit (Revenue - Cost of Goods Sold) divided by Revenue. Indicates efficiency in production or service delivery.", ".2%"),
+            'operatingMargins': ("Operating Margin", "Operating Income (EBIT) divided by Revenue. Shows profitability from core business operations before interest and taxes.", ".2%"),
+            'ebitdaMargins': ("EBITDA Margin", "EBITDA divided by Revenue. Profitability before interest, taxes, depreciation, and amortization.", ".2%"),
+            'returnOnEquity': ("Return on Equity (ROE)", "Net Income divided by average Shareholder Equity. Measures how effectively the company uses equity investments to generate profit. Higher is generally better.", ".2%"),
+            'returnOnAssets': ("Return on Assets (ROA)", "Net Income divided by average Total Assets. Measures how efficiently the company uses its assets to generate profit.", ".2%"),
+
+            # Per Share Data
+            'trailingEps': ("Trailing EPS", "Earnings Per Share calculated from the last 12 months of reported net income.", ",.2f"),
+            'forwardEps': ("Forward EPS", "Estimated Earnings Per Share for the next fiscal year based on analyst consensus.", ",.2f"),
+
+            # Stock Price & Volume
+            'beta': ("Beta", "Measures the stock's volatility relative to the overall market (typically S&P 500 = 1.0). >1 indicates higher volatility, <1 lower volatility.", ".2f"),
+            'fiftyTwoWeekHigh': ("52 Week High", "Highest trading price reached in the past 52 weeks.", ",.2f"),
+            'fiftyTwoWeekLow': ("52 Week Low", "Lowest trading price reached in the past 52 weeks.", ",.2f"),
+            'volume': ("Volume", "Number of shares traded during the most recent trading session.", ",.0f"),
+            'averageVolume': ("Avg Volume (10 Day)", "Average daily trading volume over the past 10 sessions.", ",.0f"),
+
+            # Share Structure
+            'sharesOutstanding': ("Shares Outstanding", "Total number of shares issued by the company.", ",.0f"),
+            'floatShares': ("Float Shares", "Number of shares available for trading by the public (excludes closely held shares by insiders, governments, etc.).", ",.0f"),
         }
+        # --- END UPDATED metric_definitions ---
+
         metrics_data = {}
+        # (Logic to extract and format values remains the same)
         for key, (label, tooltip, fmt) in metric_definitions.items():
             value = info.get(key)
             if value is not None and pd.notna(value):
@@ -443,6 +468,7 @@ def display_company_info(info: Optional[Dict[str, Any]], show_tooltips: bool):
                     logger.warning(
                         f"Formatting error for metric {key} (Value: {value}, Type: {type(value)}): {format_err}")
                     metrics_data[label] = ("Error", tooltip)
+
         if not metrics_data:
             st.write("No detailed financial metrics available.")
         else:
@@ -458,11 +484,13 @@ def display_company_info(info: Optional[Dict[str, Any]], show_tooltips: bool):
                         label = labels_ordered[metric_index]
                         value_str, tooltip = metrics_data[label]
                         with cols[j]:
+                            # Use the tooltip from the dictionary
                             st.metric(label=label, value=value_str,
                                       help=tooltip if show_tooltips else None)
 
-
 # --- Sentiment Analysis Display ---
+
+
 def display_sentiment_analysis(articles: List[Dict[str, Any]], avg_sentiment: float, sentiment_df: Optional[pd.DataFrame]):
     logger.info("Displaying sentiment analysis.")
     st.subheader("News & Sentiment Analysis")

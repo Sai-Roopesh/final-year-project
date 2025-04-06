@@ -160,7 +160,7 @@ def display_sidebar(defaults: Dict[str, Any]) -> Dict[str, Any]:
             'run_ml_section', False), key="cb_ml_enable")
         selected_models = []
         if run_ml_section:
-            model_options = ["Random Forest", "Linear Regression",
+            model_options = ["Random Forest", "Linear Regression", "Ridge Regression", "Lasso Regression",
                              "Gradient Boosting"]  # Add more models here
             selected_models = st.multiselect(
                 "Select ML Models for Prediction",
