@@ -8,133 +8,364 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from typing import Dict, Any, Optional, List
 import yfinance as yf
+from datetime import datetime  # Ensure datetime is imported
 
 # Use relative imports within the src package
 from . import config
 from . import utils
-
-logger = utils.logger  # Use the logger from utils
-
-# --- Main Price Chart & Technicals ---
-# (plot_stock_data function remains the same)
+logger = utils.logger
+format_value = utils.format_value
 
 
+# --- Analyst Recommendations Display ---
+def display_analyst_recommendations(analyst_info: Optional[Dict[str, Any]]):
+    """Displays analyst recommendations and target price data."""
+    logger.info("Displaying analyst recommendations.")
+    st.subheader("Analyst Ratings & Price Targets")
+
+    if not analyst_info:
+        st.info("Analyst recommendation data not available for this stock.")
+        return
+
+    targets = analyst_info.get('targets', {})
+    current_rec = analyst_info.get('current_recommendation', 'N/A')
+    num_analysts = analyst_info.get('num_analysts')
+    history = analyst_info.get('history')  # This should be a DataFrame
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Current Consensus**")
+        rec_display = current_rec.replace('_', ' ').title(
+        ) if isinstance(current_rec, str) else 'N/A'
+        st.metric("Recommendation", rec_display,
+                  help="The consensus recommendation key from analysts (e.g., buy, hold, sell). Source: yfinance.")
+        if num_analysts is not None:
+            st.caption(f"Based on {num_analysts} analyst opinions.")
+        else:
+            st.caption("Number of analysts not available.")
+
+    with col2:
+        st.markdown("**Price Targets**")
+        if targets:
+            tgt_col1, tgt_col2 = st.columns(2)
+            with tgt_col1:
+                if 'Low' in targets:
+                    st.metric(
+                        "Low Target", f"${targets['Low']:.2f}", help="Lowest analyst price target.")
+                if 'Mean' in targets:
+                    st.metric(
+                        "Mean Target", f"${targets['Mean']:.2f}", help="Average analyst price target.")
+            with tgt_col2:
+                if 'High' in targets:
+                    st.metric(
+                        "High Target", f"${targets['High']:.2f}", help="Highest analyst price target.")
+                if 'Median' in targets:
+                    st.metric(
+                        "Median Target", f"${targets['Median']:.2f}", help="Median analyst price target.")
+        else:
+            st.info("Price target data not available.")
+
+    st.markdown("---")
+
+    st.markdown("**Recent Recommendation Changes**")
+    if history is not None and not history.empty:
+        history_display = history.copy()
+        if pd.api.types.is_datetime64_any_dtype(history_display.index):
+            history_display.index = history_display.index.strftime('%Y-%m-%d')
+        # Ensure columns exist before displaying
+        display_cols = [col for col in ['Firm', 'To Grade',
+                                        'Action'] if col in history_display.columns]
+        if display_cols:
+            st.dataframe(history_display[display_cols],
+                         use_container_width=True)
+            st.caption("Recent analyst rating changes. Source: yfinance.")
+        else:
+            st.info(
+                "Recommendation history available but standard columns ('Firm', 'To Grade', 'Action') not found.")
+            # Display raw data if columns differ
+            st.dataframe(history_display, use_container_width=True)
+    else:
+        st.info("No recent recommendation history available.")
+
+
+# --- Fundamental Data Display ---
+def display_fundamental_data(financials: Optional[pd.DataFrame],
+                             balance_sheet: Optional[pd.DataFrame],
+                             cash_flow: Optional[pd.DataFrame]):
+    """Displays fundamental financial statements in formatted tables."""
+    logger.info("Displaying fundamental data.")
+    st.subheader("Fundamental Financial Statements (Annual)")
+    data_found = False
+
+    if financials is not None and not financials.empty:
+        data_found = True
+        st.markdown("##### Income Statement")
+        common_items_income = ['Total Revenue', 'Cost Of Revenue', 'Gross Profit', 'Operating Expense', 'Operating Income',
+                               'Interest Expense', 'Income Before Tax', 'Income Tax Expense', 'Net Income', 'Basic EPS', 'Diluted EPS', 'EBITDA']
+        # Ensure index is datetime before trying to access columns
+        if not pd.api.types.is_datetime64_any_dtype(financials.index):
+            try:
+                financials.index = pd.to_datetime(financials.index)
+            except Exception:
+                logger.warning(
+                    "Could not convert financials index to datetime.")
+                # Proceed cautiously, column check might fail if index is wrong type
+
+        cols_to_display = [
+            col for col in common_items_income if col in financials.columns]
+        if not cols_to_display:
+            st.info("No standard income statement items found.")
+        else:
+            display_fin = financials[cols_to_display].copy()
+            # Ensure index is formatted nicely (e.g., Year)
+            if pd.api.types.is_datetime64_any_dtype(display_fin.index):
+                display_fin.index = display_fin.index.strftime('%Y')
+            elif pd.api.types.is_integer_dtype(display_fin.index):
+                pass  # Assume index is already year
+            for col in display_fin.columns:
+                if pd.api.types.is_numeric_dtype(display_fin[col]):
+                    display_fin[col] = display_fin[col].apply(format_value)
+            # Transpose back for display
+            st.dataframe(display_fin.T, use_container_width=True)
+            st.caption(
+                "Values typically in thousands or millions, depending on currency/source.")
+    else:
+        st.info("Income Statement data not available.")
+
+    st.markdown("---")
+    if balance_sheet is not None and not balance_sheet.empty:
+        data_found = True
+        st.markdown("##### Balance Sheet")
+        common_items_balance = ['Total Assets', 'Current Assets', 'Cash And Cash Equivalents', 'Receivables', 'Inventory', 'Total Non Current Assets', 'Net PPE', 'Total Liabilities Net Minority Interest', 'Current Liabilities',
+                                'Payables And Accrued Expenses', 'Current Debt', 'Total Non Current Liabilities Net Minority Interest', 'Long Term Debt And Capital Lease Obligation', 'Total Equity Gross Minority Interest', 'Stockholders Equity', 'Retained Earnings']
+        if not pd.api.types.is_datetime64_any_dtype(balance_sheet.index):
+            try:
+                balance_sheet.index = pd.to_datetime(balance_sheet.index)
+            except Exception:
+                logger.warning(
+                    "Could not convert balance sheet index to datetime.")
+
+        cols_to_display = [
+            col for col in common_items_balance if col in balance_sheet.columns]
+        if not cols_to_display:
+            st.info("No standard balance sheet items found.")
+        else:
+            display_bal = balance_sheet[cols_to_display].copy()
+            if pd.api.types.is_datetime64_any_dtype(display_bal.index):
+                display_bal.index = display_bal.index.strftime('%Y')
+            for col in display_bal.columns:
+                if pd.api.types.is_numeric_dtype(display_bal[col]):
+                    display_bal[col] = display_bal[col].apply(format_value)
+            st.dataframe(display_bal.T, use_container_width=True)
+            st.caption(
+                "Snapshot of assets, liabilities, and equity at year-end.")
+    else:
+        st.info("Balance Sheet data not available.")
+
+    st.markdown("---")
+    if cash_flow is not None and not cash_flow.empty:
+        data_found = True
+        st.markdown("##### Cash Flow Statement")
+        common_items_cashflow = ['Operating Cash Flow', 'Investing Cash Flow', 'Financing Cash Flow', 'End Cash Position', 'Capital Expenditure',
+                                 'Free Cash Flow', 'Issuance Of Capital Stock', 'Repurchase Of Capital Stock', 'Repayment Of Debt', 'Issuance Of Debt']
+        if not pd.api.types.is_datetime64_any_dtype(cash_flow.index):
+            try:
+                cash_flow.index = pd.to_datetime(cash_flow.index)
+            except Exception:
+                logger.warning(
+                    "Could not convert cash flow index to datetime.")
+
+        cols_to_display = [
+            col for col in common_items_cashflow if col in cash_flow.columns]
+        if not cols_to_display:
+            st.info("No standard cash flow statement items found.")
+        else:
+            display_cf = cash_flow[cols_to_display].copy()
+            if pd.api.types.is_datetime64_any_dtype(display_cf.index):
+                display_cf.index = display_cf.index.strftime('%Y')
+            for col in display_cf.columns:
+                if pd.api.types.is_numeric_dtype(display_cf[col]):
+                    display_cf[col] = display_cf[col].apply(format_value)
+            st.dataframe(display_cf.T, use_container_width=True)
+            st.caption(
+                "Movement of cash between operating, investing, and financing activities.")
+    else:
+        st.info("Cash Flow Statement data not available.")
+
+    if not data_found:
+        st.warning(
+            "No fundamental financial statement data could be retrieved for this stock.")
+
+
+# --- Main Price Chart (Price/Volume/SMA/BB) ---
 def plot_stock_data(df: pd.DataFrame, symbol: str, indicators: Dict[str, bool], patterns: List[str]):
-    """ Plots the main stock chart with OHLC, Volume, selected indicators and lists patterns. """
-    logger.info(f"Plotting stock data for {symbol}")
-    st.subheader("Price Chart & Technical Analysis")
+    """ Plots the main stock chart with OHLC, Volume, SMA, BB and lists patterns. """
+    logger.info(f"Plotting main stock data for {symbol}")
+    st.subheader("Price Chart & Volume")  # Changed subheader
     if df is None or df.empty:
         st.warning("No historical data available to plot.")
         return
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        vertical_spacing=0.03,
-                        row_heights=[0.7, 0.3],
-                        specs=[[{"secondary_y": True}],
-                               [{"secondary_y": False}]])
+    # Create figure with ONLY ONE ROW, but keep secondary y-axis for volume
+    fig = make_subplots(rows=1, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.02,  # Less relevant now
+                        # Keep spec for volume
+                        specs=[[{"secondary_y": True}]])
 
-    # --- Row 1: Price and Volume ---
-    fig.add_trace(go.Candlestick(
-        x=df['Date'], open=df['Open'], high=df['High'],
-        low=df['Low'], close=df['Close'], name=f'{symbol} Price',
-        increasing_line_color=config.POSITIVE_COLOR, decreasing_line_color=config.NEGATIVE_COLOR
-    ), row=1, col=1, secondary_y=False)
-    fig.add_trace(go.Bar(
-        x=df['Date'], y=df['Volume'], name='Volume',
-        marker_color=config.VOLUME_COLOR,
-    ), row=1, col=1, secondary_y=True)
+    # 1. Candlestick Trace
+    fig.add_trace(go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+                  name=f'{symbol} Price', increasing_line_color=config.POSITIVE_COLOR, decreasing_line_color=config.NEGATIVE_COLOR),
+                  secondary_y=False)  # Assign to primary axis
 
-    # SMA Lines
+    # 2. Volume Trace
+    fig.add_trace(go.Bar(x=df['Date'], y=df['Volume'], name='Volume',
+                  marker_color=config.VOLUME_COLOR),
+                  secondary_y=True)  # Assign to secondary axis
+
+    # 3. Add SMA Overlays
     if indicators.get('show_sma'):
         for window in config.SMA_PERIODS:
             sma_col = f'SMA_{window}'
             if sma_col in df.columns and df[sma_col].notna().any():
-                color = config.SMA_COLORS.get(sma_col, '#cccccc')
-                fig.add_trace(go.Scatter(
-                    x=df['Date'], y=df[sma_col], mode='lines',
-                    line=dict(color=color, width=1.5), name=f'SMA {window}'
-                ), row=1, col=1, secondary_y=False)
+                color = config.SMA_COLORS.get(
+                    sma_col, '#cccccc')  # Use colors from config
+                fig.add_trace(go.Scatter(x=df['Date'], y=df[sma_col], mode='lines', line=dict(
+                    color=color, width=1.5), name=f'SMA {window}'),
+                    secondary_y=False)  # Overlay on price axis
 
-    # Bollinger Bands
+    # 4. Add Bollinger Bands Overlays
     if indicators.get('show_bollinger'):
         bb_upper_col, bb_lower_col = 'BB_Upper', 'BB_Lower'
         if bb_upper_col in df.columns and df[bb_upper_col].notna().any():
-            fig.add_trace(go.Scatter(
-                x=df['Date'], y=df[bb_upper_col], mode='lines',
-                line=dict(color=config.BB_BAND_COLOR, width=1, dash='dash'),
-                name='BB Upper'
-            ), row=1, col=1, secondary_y=False)
+            fig.add_trace(go.Scatter(x=df['Date'], y=df[bb_upper_col], mode='lines', line=dict(
+                color=config.BB_BAND_COLOR, width=1, dash='dash'), name='BB Upper'),
+                secondary_y=False)  # Overlay on price axis
+            # Add lower band only if upper exists
             if bb_lower_col in df.columns and df[bb_lower_col].notna().any():
-                fig.add_trace(go.Scatter(
-                    x=df['Date'], y=df[bb_lower_col], mode='lines',
-                    line=dict(color=config.BB_BAND_COLOR,
-                              width=1, dash='dash'),
-                    fill='tonexty', fillcolor=config.BB_FILL_COLOR,
-                    name='BB Lower'
-                ), row=1, col=1, secondary_y=False)
+                fig.add_trace(go.Scatter(x=df['Date'], y=df[bb_lower_col], mode='lines', line=dict(
+                    color=config.BB_BAND_COLOR, width=1, dash='dash'), fill='tonexty', fillcolor=config.BB_FILL_COLOR, name='BB Lower'),
+                    secondary_y=False)  # Overlay on price axis
 
-    # --- Row 2: RSI and MACD ---
-    added_row2 = False
-    if indicators.get('show_rsi') and 'RSI' in df.columns and df['RSI'].notna().any():
-        fig.add_trace(go.Scatter(x=df['Date'], y=df['RSI'], name='RSI', line=dict(
-            color=config.PRIMARY_COLOR)), row=2, col=1)
-        fig.add_hline(y=70, line_dash='dash',
-                      line_color='rgba(200, 0, 0, 0.5)', row=2, col=1)
-        fig.add_hline(y=30, line_dash='dash',
-                      line_color='rgba(0, 150, 0, 0.5)', row=2, col=1)
-        fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
-        added_row2 = True
-
-    if indicators.get('show_macd') and 'MACD' in df.columns and df['MACD'].notna().any():
-        macd_col, signal_col, hist_col = 'MACD', 'Signal_Line', 'MACD_Histogram'
-        macd_row = 2
-        fig.add_trace(go.Scatter(x=df['Date'], y=df[macd_col], name='MACD', line=dict(
-            color=config.SECONDARY_COLOR)), row=macd_row, col=1)
-        if signal_col in df.columns and df[signal_col].notna().any():
-            fig.add_trace(go.Scatter(x=df['Date'], y=df[signal_col], name='Signal Line', line=dict(
-                color=config.PRIMARY_COLOR, dash='dot')), row=macd_row, col=1)
-        if hist_col in df.columns and df[hist_col].notna().any():
-            hist_colors = [config.POSITIVE_COLOR if v >=
-                           0 else config.NEGATIVE_COLOR for v in df[hist_col]]
-            fig.add_trace(go.Bar(x=df['Date'], y=df[hist_col], name='Histogram',
-                          marker_color=hist_colors), row=macd_row, col=1)
-        fig.update_yaxes(title_text="MACD", row=macd_row, col=1)
-        added_row2 = True
-
-    # --- Layout Updates ---
+    # --- Configure Layout for Price Chart ---
     fig.update_layout(
-        template="plotly_dark", height=650 if added_row2 else 500, hovermode='x unified',
+        template="plotly_dark",
+        height=500,  # Adjust height as needed
+        hovermode='x unified',
         legend=dict(orientation="h", yanchor="bottom", y=1.01,
                     xanchor="left", x=0, font_color='white'),
-        margin=dict(l=50, r=20, t=30, b=50), xaxis_rangeslider_visible=False, xaxis_showticklabels=True,
-        xaxis2_showticklabels=True, yaxis=dict(title="Price (USD)", showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+        margin=dict(l=50, r=20, t=30, b=50),
+        xaxis_rangeslider_visible=False,  # Hide rangeslider
+        xaxis_title="Date",
+        yaxis=dict(title="Price (USD)", showgrid=True,
+                   gridcolor='rgba(255,255,255,0.1)'),
         yaxis2=dict(title="Volume", showgrid=False, overlaying='y',
-                    side='right', showticklabels=False),
-        yaxis3=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)')
+                    side='right', showticklabels=False)  # Keep volume axis config
     )
-    if not added_row2:
-        fig.update_layout(height=500, xaxis2_visible=False,
-                          yaxis3_visible=False)
 
-    st.plotly_chart(fig, use_container_width=True,
-                    key="main_stock_chart_indicators")
+    # Display the main price chart
+    st.plotly_chart(fig, use_container_width=True, key="main_stock_chart")
 
-    # --- Technical Patterns Display ---
+    # Display Technical Patterns
     st.subheader("Technical Pattern Analysis")
     if patterns:
         num_patterns = len(patterns)
-        cols = st.columns(min(num_patterns, 3))
+        cols = st.columns(min(num_patterns, 3))  # Max 3 columns
         for i, pattern in enumerate(patterns):
             with cols[i % 3]:
-                # Using an icon for better visual cue
                 st.info(f"💡 {pattern}")
     else:
-        st.info("No significant standard technical patterns detected.")
-    st.caption("Pattern analysis is illustrative, not investment advice.")
+        st.info(
+            "No significant standard technical patterns detected in the recent data.")
+    st.caption(
+        "Pattern analysis is based on standard indicator readings and is illustrative, not investment advice.")
+
+
+# --- Technical Indicators Plot (RSI/MACD) ---
+def plot_technical_indicators(df: pd.DataFrame, indicators: Dict[str, bool]):
+    """Plots technical indicators like RSI and MACD in separate subplots."""
+    logger.info("Plotting technical indicators (RSI, MACD).")
+
+    # Check which indicators are enabled AND data exists
+    show_rsi = indicators.get(
+        'show_rsi', False) and 'RSI' in df.columns and df['RSI'].notna().any()
+    show_macd = indicators.get(
+        'show_macd', False) and 'MACD' in df.columns and df['MACD'].notna().any()
+
+    if not show_rsi and not show_macd:
+        logger.info("No RSI or MACD indicators enabled or available to plot.")
+        return  # Don't plot anything if neither is selected
+
+    num_rows = 0
+    subplot_titles_list = []
+    if show_rsi:
+        num_rows += 1
+        subplot_titles_list.append("RSI")
+    if show_macd:
+        num_rows += 1
+        subplot_titles_list.append("MACD")
+
+    if num_rows == 0:
+        return  # Safety check
+
+    st.subheader("Technical Indicators")  # Add subheader for this section
+
+    # Create subplots figure
+    fig_indicators = make_subplots(
+        rows=num_rows, cols=1, shared_xaxes=True,
+        vertical_spacing=0.05,  # Adjust spacing
+        subplot_titles=subplot_titles_list  # Use dynamic titles
+    )
+
+    current_row = 1
+
+    # Plot RSI
+    if show_rsi:
+        fig_indicators.add_trace(go.Scatter(x=df['Date'], y=df['RSI'], name='RSI', line=dict(
+            color=config.PRIMARY_COLOR)), row=current_row, col=1)
+        fig_indicators.add_hline(
+            y=70, line_dash='dash', line_color='rgba(200, 0, 0, 0.5)', row=current_row, col=1)
+        fig_indicators.add_hline(
+            y=30, line_dash='dash', line_color='rgba(0, 150, 0, 0.5)', row=current_row, col=1)
+        fig_indicators.update_yaxes(title_text="RSI", range=[
+                                    0, 100], row=current_row, col=1)
+        current_row += 1
+
+    # Plot MACD
+    if show_macd:
+        macd_col, signal_col, hist_col = 'MACD', 'Signal_Line', 'MACD_Histogram'
+        fig_indicators.add_trace(go.Scatter(x=df['Date'], y=df[macd_col], name='MACD', line=dict(
+            color=config.SECONDARY_COLOR)), row=current_row, col=1)
+        if signal_col in df.columns and df[signal_col].notna().any():
+            fig_indicators.add_trace(go.Scatter(x=df['Date'], y=df[signal_col], name='Signal Line', line=dict(
+                color=config.PRIMARY_COLOR, dash='dot')), row=current_row, col=1)
+        if hist_col in df.columns and df[hist_col].notna().any():
+            hist_colors = [config.POSITIVE_COLOR if v >=
+                           0 else config.NEGATIVE_COLOR for v in df[hist_col]]
+            fig_indicators.add_trace(go.Bar(x=df['Date'], y=df[hist_col], name='Histogram',
+                                            marker_color=hist_colors), row=current_row, col=1)
+        fig_indicators.update_yaxes(title_text="MACD", row=current_row, col=1)
+        # current_row += 1 # No need to increment after the last plot
+
+    # Update layout for the indicator subplots
+    fig_indicators.update_layout(
+        template="plotly_dark",
+        height=250 * num_rows,  # Adjust height based on number of indicators shown
+        hovermode='x unified',
+        showlegend=False,  # Hide legend as traces are simple
+        margin=dict(l=50, r=20, t=40 if subplot_titles_list else 20,
+                    b=50)  # Adjust top margin for titles
+    )
+    # Ensure bottom x-axis label is visible and add title
+    fig_indicators.update_xaxes(showticklabels=True, row=num_rows, col=1)
+    fig_indicators.update_xaxes(title_text="Date", row=num_rows, col=1)
+
+    # Display the indicators chart
+    st.plotly_chart(fig_indicators, use_container_width=True,
+                    key="indicator_subplots")
 
 
 # --- Company Info Display ---
-# (display_company_info function remains the same)
 def display_company_info(info: Optional[Dict[str, Any]], show_tooltips: bool):
     logger.info(
         f"Displaying company info for {info.get('symbol', 'N/A') if info else 'N/A'}")
@@ -151,9 +382,10 @@ def display_company_info(info: Optional[Dict[str, Any]], show_tooltips: bool):
             value) else "N/A", help="Most recent price.")
     with cols_metrics[1]:
         mkt_cap = info.get('marketCap')
-        # Format market cap nicely (Billions/Millions)
         if mkt_cap and isinstance(mkt_cap, (int, float)):
-            if mkt_cap >= 1e9:
+            if mkt_cap >= 1e12:  # Add Trillion
+                mkt_cap_str = f"${mkt_cap / 1e12:.2f}T"
+            elif mkt_cap >= 1e9:
                 mkt_cap_str = f"${mkt_cap / 1e9:.2f}B"
             elif mkt_cap >= 1e6:
                 mkt_cap_str = f"${mkt_cap / 1e6:.2f}M"
@@ -168,87 +400,56 @@ def display_company_info(info: Optional[Dict[str, Any]], show_tooltips: bool):
     with cols_metrics[3]:
         st.metric("Industry", info.get('industry', 'N/A'),
                   help="Company's industry.")
+
     st.markdown("---")
     st.subheader("Business Summary")
     st.info(info.get('longBusinessSummary', 'No business summary available.'))
     st.markdown("---")
+
     with st.expander("Key Financial Metrics & Ratios", expanded=False):
-        # More comprehensive metric definitions
         metric_definitions = {
-            # Valuation
-            'trailingPE': ("Trailing P/E", "Price/Earnings (past 12m).", ".2f"),
-            'forwardPE': ("Forward P/E", "Price/Earnings (est. next year).", ".2f"),
-            'priceToBook': ("Price/Book (P/B)", "Market value vs. book value.", ".2f"),
-            # Use TTM P/S
-            'priceToSalesTrailing12Months': ("Price/Sales (P/S)", "Market value vs. revenue (past 12m).", ".2f"),
-            'enterpriseValue': ("Enterprise Value", "Total company value (market cap + debt - cash).", ",.0f"),
-            'enterpriseToRevenue': ("EV/Revenue", "EV vs. total revenue.", ".2f"),
-            'enterpriseToEbitda': ("EV/EBITDA", "EV vs. EBITDA.", ".2f"),
-            # Dividends & Payout
-            'dividendYield': ("Dividend Yield", "Annual dividend / share price.", ".2%"),
-            'payoutRatio': ("Payout Ratio", "% of earnings paid as dividends.", ".2%"),
-            # Value is often float, not %
-            'fiveYearAvgDividendYield': ("5Y Avg Div Yield", "Avg. dividend yield (5y).", ".2f"),
-            # Profitability & Margins
-            'profitMargins': ("Profit Margin", "Net income / revenue.", ".2%"),
-            'grossMargins': ("Gross Margin", "Gross profit / revenue.", ".2%"),
-            'operatingMargins': ("Operating Margin", "Operating income / revenue.", ".2%"),
-            # Added EBITDA margin
-            'ebitdaMargins': ("EBITDA Margin", "EBITDA / revenue.", ".2%"),
-            'returnOnEquity': ("Return on Equity (ROE)", "Net income / shareholder equity.", ".2%"),
-            'returnOnAssets': ("Return on Assets (ROA)", "Net income / total assets.", ".2%"),
-            # Per Share
-            # Add $ sign format
-            'trailingEps': ("Trailing EPS", "Earnings per share (past 12m).", ",.2f"),
-            # Add $ sign format
-            'forwardEps': ("Forward EPS", "Est. earnings per share (next year).", ",.2f"),
-            # Volatility & Other
+            'trailingPE': ("Trailing P/E", "Price/Earnings (past 12m).", ".2f"), 'forwardPE': ("Forward P/E", "Price/Earnings (est. next year).", ".2f"),
+            'priceToBook': ("Price/Book (P/B)", "Market value vs. book value.", ".2f"), 'priceToSalesTrailing12Months': ("Price/Sales (P/S)", "Market value vs. revenue (past 12m).", ".2f"),
+            'enterpriseValue': ("Enterprise Value", "Total company value (market cap + debt - cash).", ",.0f"), 'enterpriseToRevenue': ("EV/Revenue", "EV vs. total revenue.", ".2f"), 'enterpriseToEbitda': ("EV/EBITDA", "EV vs. EBITDA.", ".2f"),
+            'dividendYield': ("Dividend Yield", "Annual dividend / share price.", ".2%"), 'payoutRatio': ("Payout Ratio", "% of earnings paid as dividends.", ".2%"), 'fiveYearAvgDividendYield': ("5Y Avg Div Yield", "Avg. dividend yield (5y).", ".2f"),
+            'profitMargins': ("Profit Margin", "Net income / revenue.", ".2%"), 'grossMargins': ("Gross Margin", "Gross profit / revenue.", ".2%"), 'operatingMargins': ("Operating Margin", "Operating income / revenue.", ".2%"), 'ebitdaMargins': ("EBITDA Margin", "EBITDA / revenue.", ".2%"),
+            'returnOnEquity': ("Return on Equity (ROE)", "Net income / shareholder equity.", ".2%"), 'returnOnAssets': ("Return on Assets (ROA)", "Net income / total assets.", ".2%"),
+            'trailingEps': ("Trailing EPS", "Earnings per share (past 12m).", ",.2f"), 'forwardEps': ("Forward EPS", "Est. earnings per share (next year).", ",.2f"),
             'beta': ("Beta", "Volatility vs. market (S&P 500).", ".2f"),
-            # Add $ sign format
-            'fiftyTwoWeekHigh': ("52 Week High", "Highest price (past 52w).", ",.2f"),
-            # Add $ sign format
-            'fiftyTwoWeekLow': ("52 Week Low", "Lowest price (past 52w).", ",.2f"),
-            'volume': ("Volume", "Shares traded (latest session).", ",.0f"),
-            'averageVolume': ("Avg Volume (10 Day)", "Avg daily volume (10d).", ",.0f"),
-            # Added shares outstanding
-            'sharesOutstanding': ("Shares Outstanding", "Total number of shares.", ",.0f"),
+            'fiftyTwoWeekHigh': ("52 Week High", "Highest price (past 52w).", ",.2f"), 'fiftyTwoWeekLow': ("52 Week Low", "Lowest price (past 52w).", ",.2f"),
+            'volume': ("Volume", "Shares traded (latest session).", ",.0f"), 'averageVolume': ("Avg Volume (10 Day)", "Avg daily volume (10d).", ",.0f"),
+            'sharesOutstanding': ("Shares Outstanding", "Total number of shares.", ",.0f"), 'floatShares': ("Float Shares", "Shares available for public trading.", ",.0f"),
         }
         metrics_data = {}
-        # Extract and format metrics safely
         for key, (label, tooltip, fmt) in metric_definitions.items():
             value = info.get(key)
-            if value is not None and pd.notna(value):  # Check for None and NaN
+            if value is not None and pd.notna(value):
                 try:
-                    if fmt == ".2%":  # Format as percentage
+                    if fmt == ".2%":
                         value_str = f"{value:.2%}"
-                    elif fmt == ",.0f":  # Format as integer with commas
-                        value_str = f"${value:,.0f}" if key == 'enterpriseValue' else f"{value:,.0f}"
-                    elif fmt == ",.2f":  # Format as float with 2 decimals
-                        # Add $ sign for currency-like values
-                        if key in ['trailingEps', 'forwardEps', 'fiftyTwoWeekHigh', 'fiftyTwoWeekLow']:
-                            value_str = f"${value:,.2f}"
-                        else:  # Ratios like P/E, P/B, Beta
-                            value_str = f"{value:.2f}"
-                    else:  # Default string conversion
+                    elif fmt == ",.0f":
+                        prefix = "$" if key == 'enterpriseValue' and value >= 0 else "-$" if key == 'enterpriseValue' else ""
+                        value_str = f"{prefix}{abs(value):,.0f}"
+                    elif fmt == ",.2f":
+                        prefix = "$" if key in ['trailingEps', 'forwardEps', 'fiftyTwoWeekHigh',
+                                                'fiftyTwoWeekLow'] and value >= 0 else "-$" if key in ['trailingEps', 'forwardEps'] else ""
+                        value_str = f"{prefix}{abs(value):,.2f}"
+                    elif fmt == ".2f":
+                        value_str = f"{value:.2f}"
+                    else:
                         value_str = str(value)
                     metrics_data[label] = (value_str, tooltip)
-                except (ValueError, TypeError):  # Handle potential formatting errors
-                    metrics_data[label] = ("Error", tooltip)
+                except (ValueError, TypeError) as format_err:
                     logger.warning(
-                        f"Formatting error for metric {key} with value {value}")
-            # else: # Optionally include N/A for missing values
-                # metrics_data[label] = ("N/A", tooltip)
-
+                        f"Formatting error for metric {key} (Value: {value}, Type: {type(value)}): {format_err}")
+                    metrics_data[label] = ("Error", tooltip)
         if not metrics_data:
             st.write("No detailed financial metrics available.")
         else:
-            # Display metrics in columns
-            cols_per_row = 4  # Adjust number of columns as needed
+            cols_per_row = 4
             num_metrics = len(metrics_data)
-            # Keep order consistent if needed
             labels_ordered = list(metrics_data.keys())
             num_rows = (num_metrics + cols_per_row - 1) // cols_per_row
-
             for i in range(num_rows):
                 cols = st.columns(cols_per_row)
                 for j in range(cols_per_row):
@@ -257,17 +458,11 @@ def display_company_info(info: Optional[Dict[str, Any]], show_tooltips: bool):
                         label = labels_ordered[metric_index]
                         value_str, tooltip = metrics_data[label]
                         with cols[j]:
-                            # Use st.metric for better visual separation
-                            if show_tooltips:
-                                st.metric(
-                                    label=label, value=value_str, help=tooltip)
-                            else:
-                                st.metric(label=label, value=value_str)
+                            st.metric(label=label, value=value_str,
+                                      help=tooltip if show_tooltips else None)
+
 
 # --- Sentiment Analysis Display ---
-# (display_sentiment_analysis function remains the same)
-
-
 def display_sentiment_analysis(articles: List[Dict[str, Any]], avg_sentiment: float, sentiment_df: Optional[pd.DataFrame]):
     logger.info("Displaying sentiment analysis.")
     st.subheader("News & Sentiment Analysis")
@@ -275,84 +470,72 @@ def display_sentiment_analysis(articles: List[Dict[str, Any]], avg_sentiment: fl
         st.warning("No news/sentiment data found.")
         return
     with st.container():
-        col1, col2 = st.columns([1, 3])  # Score vs Trend chart ratio
+        col1, col2 = st.columns([1, 3])
         with col1:
-            # Determine sentiment label and color
             sentiment_color_class = "positive" if avg_sentiment > 0.05 else "negative" if avg_sentiment < -0.05 else "neutral"
             sentiment_label = "Positive 😊" if avg_sentiment > 0.05 else "Negative 😞" if avg_sentiment < - \
                 0.05 else "Neutral 😐"
-
-            # Display metric using custom HTML for better styling control if needed, or st.metric
-            st.metric("Avg. News Sentiment", f"{avg_sentiment:.2f}", delta=sentiment_label,
-                      help="Average VADER Compound Score (-1 to +1) from recent news.")
-            # Optional custom card styling:
-            # st.markdown(f"""
-            #      <div class='metric-card' style='text-align: center;'>
-            #          <p style='font-size: 0.9em; color: #AAAAAA; margin-bottom: 0.2em;'>Avg. Sentiment Score</p>
-            #          <p class='{sentiment_color_class}' style='font-size: 2em; font-weight: bold; margin-bottom: 0.2em;'>{avg_sentiment:.2f}</p>
-            #          <p class='{sentiment_color_class}' style='font-size: 1em;'>({sentiment_label})</p>
-            #      </div>
-            #  """, unsafe_allow_html=True)
-
+            st.metric(label="Avg. News Sentiment", value=f"{avg_sentiment:.2f}", delta=sentiment_label,
+                      help="Average VADER Compound Score or mapped FinBERT Score (-1 to +1) from recent news.")
         with col2:
-            # Plot daily sentiment trend if available
             if sentiment_df is not None and not sentiment_df.empty:
                 st.markdown(
                     "<p style='font-weight: bold; text-align: center; margin-bottom: 0.5em;'>Daily Sentiment Trend</p>", unsafe_allow_html=True)
+                if not pd.api.types.is_datetime64_any_dtype(sentiment_df.index):
+                    try:
+                        sentiment_df.index = pd.to_datetime(sentiment_df.index)
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to convert sentiment_df index to datetime: {e}")
+                        st.warning(
+                            "Could not plot sentiment trend (date index issue).")
+                        return
                 fig = px.area(sentiment_df, x=sentiment_df.index, y='Daily_Sentiment', height=200, labels={
                               'Daily_Sentiment': 'Avg. Score', 'index': 'Date'})
-                # Match line/fill color to overall sentiment
                 line_color = config.POSITIVE_COLOR if avg_sentiment > 0.05 else config.NEGATIVE_COLOR if avg_sentiment < - \
                     0.05 else config.NEUTRAL_COLOR
-                fill_color = line_color.replace(')', ', 0.1)').replace(
-                    'rgb', 'rgba')  # Make fill semi-transparent
+                fill_color = line_color.replace(
+                    ')', ', 0.1)').replace('rgb', 'rgba')
                 fig.update_traces(line_color=line_color, fillcolor=fill_color)
-                fig.add_hline(y=0, line_dash='dash',
-                              line_color='grey')  # Add neutral line
+                fig.add_hline(y=0, line_dash='dash', line_color='grey')
                 fig.update_layout(template="plotly_dark", margin=dict(l=10, r=10, t=5, b=10), showlegend=False,
                                   xaxis_showgrid=False, yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'))
                 st.plotly_chart(fig, use_container_width=True,
                                 key="sentiment_trend_chart")
             else:
-                # Placeholder if no daily data
-                st.markdown(
-                    "<div class='metric-card'><p style='text-align: center; padding: 3rem 0;'>No daily sentiment trend data.</p></div>", unsafe_allow_html=True)
-
+                st.markdown("<div class='metric-card' style='display: flex; align-items: center; justify-content: center; height: 200px;'><p>No daily sentiment trend data.</p></div>", unsafe_allow_html=True)
     st.markdown("---")
     st.subheader("Recent News Headlines")
     if not articles:
         st.info("No recent news articles found.")
         return
-
-    # Display news articles with sentiment scores
-    for i, article in enumerate(articles[:10]):  # Show top 10 articles
+    for i, article in enumerate(articles[:15]):
         sentiment = article.get('sentiment', {})
-        compound_score = sentiment.get('compound', 0)
-        # Determine border color based on sentiment
-        border_color = config.POSITIVE_COLOR if compound_score > 0.05 else config.NEGATIVE_COLOR if compound_score < - \
-            0.05 else config.NEUTRAL_COLOR
-        sentiment_label = f"{compound_score:.2f}"
-
+        # Use label and score from the standardized 'sentiment' dict
+        label = sentiment.get('label', 'neutral')
+        score = sentiment.get('score', 0.0)
+        border_color = config.POSITIVE_COLOR if label == 'positive' else config.NEGATIVE_COLOR if label == 'negative' else config.NEUTRAL_COLOR
+        # Show label and score
+        sentiment_label = f"{label.title()} ({score:.2f})"
         source = article.get('source', {}).get('name', 'Unknown Source')
         published_at_str = article.get('publishedAt', '')
         published_date = "Unknown Date"
         if published_at_str:
-            try:  # Safely parse date
+            try:
                 published_date = pd.to_datetime(
                     published_at_str).strftime('%b %d, %Y %H:%M')
-            except Exception:
-                published_date = published_at_str  # Fallback to original string
-
-        # Use an expander for each article
-        with st.expander(f"{article.get('title', 'No Title Available')} ({source})"):
-            st.caption(f"Published: {published_date} | Sentiment: <span style='color:{border_color}; font-weight:bold;'>{sentiment_label}</span>",
-                       unsafe_allow_html=True)
-            st.markdown(f"_{article.get('description', 'No description.')}_")
-            st.link_button("Read Article", article.get(
+            except Exception as date_err:
+                logger.debug(
+                    f"Could not parse article date '{published_at_str}': {date_err}")
+                published_date = published_at_str
+        expander_label = f"{article.get('title', 'No Title Available')} ({source})"
+        with st.expander(expander_label):
+            st.markdown(
+                f"""<p style='font-size: 0.85em; color: #AAAAAA; margin-bottom: 8px;'>Published: {published_date} | Sentiment: <span style='color:{border_color}; font-weight:bold;'>{sentiment_label}</span></p><p style='font-size: 0.95em;'>{article.get('description', 'No description available.')}</p>""", unsafe_allow_html=True)
+            st.link_button("Read Full Article 🔗", article.get(
                 'url', '#'), type="secondary")
 
 
-# --- Prophet Forecast Display ---
 def display_prophet_forecast(forecast_df: Optional[pd.DataFrame], historical_df: pd.DataFrame, symbol: str, days_predicted: int):
     logger.info(f"Displaying Prophet forecast for {symbol}")
     st.subheader(f"Prophet Forecast ({days_predicted} Days)")
@@ -364,99 +547,84 @@ def display_prophet_forecast(forecast_df: Optional[pd.DataFrame], historical_df:
         return
 
     fig = go.Figure()
-
     # Plot historical actual data
-    fig.add_trace(go.Scatter(
-        x=historical_df['Date'],
-        y=historical_df['Close'],
-        mode='lines', name='Actual Price',
-        line=dict(color=config.PRIMARY_COLOR, width=2)  # Use color from config
-    ))
-
+    fig.add_trace(go.Scatter(x=historical_df['Date'], y=historical_df['Close'],
+                  mode='lines', name='Actual Price', line=dict(color=config.PRIMARY_COLOR, width=2)))
     # Plot forecast line (yhat)
-    fig.add_trace(go.Scatter(
-        x=forecast_df['ds'],
-        y=forecast_df['yhat'],
-        mode='lines', name='Forecast',
-        line=dict(color=config.SECONDARY_COLOR, width=2,
-                  dash='dash')  # Use color from config
-    ))
+    fig.add_trace(go.Scatter(x=forecast_df['ds'], y=forecast_df['yhat'], mode='lines', name='Forecast', line=dict(
+        color=config.SECONDARY_COLOR, width=2, dash='dash')))
+    # Plot confidence interval
+    fig.add_trace(go.Scatter(x=forecast_df['ds'], y=forecast_df['yhat_upper'],
+                  mode='lines', name='Upper Bound', line=dict(width=0), showlegend=False))
+    fig.add_trace(go.Scatter(x=forecast_df['ds'], y=forecast_df['yhat_lower'], mode='lines', name='Confidence Interval', line=dict(
+        width=0), fill='tonexty', fillcolor='rgba(255, 165, 0, 0.2)', showlegend=True))
 
-    # Plot confidence interval (yhat_lower, yhat_upper) - transparent fill
-    # Plot upper bound line (no fill, optional legend entry)
-    fig.add_trace(go.Scatter(
-        x=forecast_df['ds'],
-        y=forecast_df['yhat_upper'],
-        mode='lines', name='Upper Bound',
-        line=dict(width=0),  # Make line invisible
-        showlegend=False  # Hide from legend
-    ))
-    # Plot lower bound line and fill to upper bound
-    fig.add_trace(go.Scatter(
-        x=forecast_df['ds'],
-        y=forecast_df['yhat_lower'],
-        mode='lines', name='Confidence Interval',
-        line=dict(width=0),  # Make line invisible
-        fill='tonexty',  # Fill area to previous trace (yhat_upper)
-        # Use secondary color with transparency
-        fillcolor='rgba(255, 165, 0, 0.2)',
-        showlegend=True  # Show interval in legend
-    ))
+    # --- Try adding vertical line with error handling ---
+    try:
+        last_hist_date = pd.to_datetime(historical_df['Date'].iloc[-1])
+        forecast_dates = pd.to_datetime(forecast_df['ds'])
+        first_forecast_date = forecast_dates[forecast_dates > last_hist_date].min(
+        )
 
-    # Add vertical line indicating start of forecast
-    # Ensure forecast_df['ds'] is sorted if not already
-    start_forecast_date = forecast_df['ds'].min()
-    # --- FIX: Remove annotation arguments from add_vline ---
-    fig.add_vline(x=start_forecast_date, line_width=1,
-                  line_dash="dash", line_color="grey")
-    # --- End FIX ---
+        vline_date = None
+        if pd.notna(first_forecast_date):
+            vline_date = first_forecast_date
+        else:
+            vline_date = forecast_dates.min()  # Fallback
 
-    # Update layout
-    fig.update_layout(
-        template="plotly_dark",
-        xaxis_title="Date",
-        yaxis_title="Price (USD)",
-        height=500,
-        hovermode='x unified',
-        legend=dict(orientation="h", yanchor="bottom", y=1.01,
-                    xanchor="left", x=0, font_color='white'),
-        margin=dict(l=50, r=20, t=30, b=20)  # Adjust margins
-    )
+        # --- Pass the Timestamp object directly ---
+        if pd.notna(vline_date):
+            fig.add_vline(
+                x=vline_date,  # Use the Timestamp object
+                line_width=1,
+                line_dash="dash",
+                line_color="grey",
+                annotation_text="Forecast Start",
+                annotation_position="top left"
+            )
+        # --- End Timestamp passing ---
 
+    except TypeError as te:
+        # Catch the specific error related to timestamp arithmetic
+        logger.warning(
+            f"Could not add forecast start vline due to TypeError: {te}. Plot will continue without the line.")
+    except Exception as e:
+        # Catch other potential errors during vline calculation/addition
+        logger.warning(f"Could not add forecast start vline: {e}")
+    # --- End error handling ---
+
+    fig.update_layout(template="plotly_dark", xaxis_title="Date", yaxis_title="Price (USD)", height=500, hovermode='x unified', legend=dict(
+        orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0, font_color='white'), margin=dict(l=50, r=20, t=30, b=20))
+    fig.update_xaxes(type='date')  # Ensure x-axis is treated as date
     st.plotly_chart(fig, use_container_width=True,
                     key="prophet_forecast_chart")
 
-    # Display table of upcoming forecast values
+    # Display tail of forecast data
     st.write("Forecasted Values (Upcoming):")
     forecast_display = forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].rename(
-        columns={'ds': 'Date', 'yhat': 'Forecast',
-                 'yhat_lower': 'Lower CI', 'yhat_upper': 'Upper CI'}
-    ).set_index('Date')
-    # Filter for future dates only
+        columns={'ds': 'Date', 'yhat': 'Forecast', 'yhat_lower': 'Lower CI', 'yhat_upper': 'Upper CI'}).set_index('Date')
+    forecast_display.index = pd.to_datetime(forecast_display.index)
     future_forecast = forecast_display[forecast_display.index >= pd.Timestamp.today(
     ).normalize()]
-    # Show only the requested number of days or available future days
-    st.dataframe(future_forecast.head(days_predicted).style.format(
-        "${:.2f}"), use_container_width=True)
+    if not future_forecast.empty:
+        st.dataframe(future_forecast.head(days_predicted).style.format(
+            "${:.2f}"), use_container_width=True)
+    else:
+        st.info("No future dates in the forecast data to display.")
     st.caption("Forecasts generated using Prophet. Not investment advice.")
 
 
 # --- Portfolio Simulation Display ---
-# (display_portfolio_analysis function remains the same)
 def display_portfolio_analysis(result: Optional[Dict[str, Any]], initial_investment: float):
     logger.info("Displaying portfolio simulation results.")
     st.subheader("Portfolio Simulation (1 Year Performance)")
     if not result:
         st.warning("Portfolio simulation data unavailable.")
         return
-
     symbols_used = result.get('symbols_used', [])
     weights = result.get('weights', {})
-    # Display symbols and weights clearly
     st.caption(f"Simulated with: {', '.join(symbols_used)}. Weights: " +
                ", ".join([f"{s}: {w*100:.1f}%" for s, w in weights.items()]))
-
-    # Display performance metrics
     final_val = result['cumulative_value'].iloc[-1]
     total_return = (final_val / initial_investment) - \
         1 if initial_investment > 0 else 0
@@ -468,24 +636,19 @@ def display_portfolio_analysis(result: Optional[Dict[str, Any]], initial_investm
         st.metric("Annualized Return", f"{result['annualized_return']:.2%}",
                   help="The geometric average annual rate of return.")
     with col3:
-        st.metric("Annualized Volatility", f"{result['annualized_volatility']:.2%}",
-                  help="Standard deviation of returns (risk measure).")
+        st.metric("Annualized Volatility",
+                  f"{result['annualized_volatility']:.2%}", help="Standard deviation of returns (risk measure).")
     with col4:
         st.metric("Sharpe Ratio", f"{result['sharpe_ratio']:.2f}",
                   help="Risk-adjusted return (higher is generally better). Assumes 0% risk-free rate.")
-
     st.markdown("---")
-
-    # Display charts in columns
     col_chart1, col_chart2 = st.columns(2)
     with col_chart1:
         st.write("**Portfolio Value Over Time**")
         value_df = result['cumulative_value']
-        # Ensure index is datetime before plotting
         if pd.api.types.is_datetime64_any_dtype(value_df.index):
             fig_value = px.area(value_df, title=None, labels={
                                 'value': 'Portfolio Value ($)', 'index': 'Date'}, height=350)
-            # Use primary color from config
             fig_value.update_traces(line_color=config.PRIMARY_COLOR, fillcolor=config.PRIMARY_COLOR.replace(
                 ')', ', 0.1)').replace('rgb', 'rgba'))
             fig_value.update_layout(
@@ -495,21 +658,15 @@ def display_portfolio_analysis(result: Optional[Dict[str, Any]], initial_investm
         else:
             logger.warning("Portfolio value chart index is not datetime.")
             st.warning("Could not plot portfolio value (date index issue).")
-
     with col_chart2:
         st.write("**Portfolio Allocation**")
         if weights:
-            # Create DataFrame and sort for consistent pie chart slices
             weights_df = pd.DataFrame(list(weights.items()), columns=[
                                       'Stock', 'Weight']).sort_values('Weight', ascending=False)
-            # Filter out tiny weights for clarity
-            # Threshold for display
             weights_df = weights_df[weights_df['Weight'] > 0.001]
-
             if not weights_df.empty:
                 fig_weights = px.pie(
                     weights_df, values='Weight', names='Stock', hole=0.3, height=350, title=None)
-                # Improve text labels
                 fig_weights.update_traces(
                     textposition='outside', textinfo='percent+label', pull=[0.03]*len(weights_df))
                 fig_weights.update_layout(
@@ -524,7 +681,6 @@ def display_portfolio_analysis(result: Optional[Dict[str, Any]], initial_investm
 
 
 # --- Correlation Analysis Display ---
-# (display_correlation_analysis function remains the same)
 def display_correlation_analysis(matrix: Optional[pd.DataFrame]):
     logger.info("Displaying correlation analysis.")
     st.subheader("Stock Correlation Analysis (1 Year Daily Returns)")
@@ -534,430 +690,297 @@ def display_correlation_analysis(matrix: Optional[pd.DataFrame]):
     if len(matrix.columns) < 2:
         st.warning("Correlation requires at least two stocks.")
         return
-
-    # Create heatmap
-    fig = px.imshow(
-        matrix,
-        labels=dict(color="Correlation Coefficient"),
-        x=matrix.columns,
-        y=matrix.index,
-        template="plotly_dark",
-        color_continuous_scale='RdBu',  # Red-Blue scale for correlation
-        zmin=-1, zmax=1,  # Ensure full correlation range
-        text_auto='.2f',  # Show values on heatmap
-        aspect="auto",  # Adjust aspect ratio
-        # Dynamic height based on number of stocks
-        height=max(400, len(matrix.columns)*50)
-    )
-    # Customize hover text
+    fig = px.imshow(matrix, labels=dict(color="Correlation Coefficient"), x=matrix.columns, y=matrix.index, template="plotly_dark",
+                    color_continuous_scale='RdBu', zmin=-1, zmax=1, text_auto='.2f', aspect="auto", height=max(400, len(matrix.columns)*50))
     fig.update_traces(
         hovertemplate='Correlation(%{x}, %{y}) = %{z:.2f}<extra></extra>')
-    # Update layout
-    fig.update_layout(
-        template="plotly_dark",
-        margin=dict(l=10, r=10, t=30, b=10),
-        xaxis_tickangle=-45  # Angle labels if many stocks
-    )
+    fig.update_layout(template="plotly_dark", margin=dict(
+        l=10, r=10, t=30, b=10), xaxis_tickangle=-45)
     st.plotly_chart(fig, use_container_width=True, key='correlation_heatmap')
     st.caption("Correlation measures how stock returns move relative to each other (+1: perfect positive, -1: perfect negative, 0: no linear relationship).")
 
 
 # --- ML Prediction Display ---
-# (display_ml_prediction function remains the same as previous fix)
 def display_ml_prediction(results: Optional[Dict[str, Any]], symbol: str):
-    """Displays results for selected ML models, handling predicted returns."""
     logger.info(f"Displaying ML prediction results for {symbol}.")
     st.subheader(f"Machine Learning Price Prediction (Illustrative)")
-
-    # Check if results exist and are not empty
     if not results:
-        st.warning(
-            "Machine Learning prediction results are not available (no models run or failed).")
+        st.warning("Machine Learning prediction results are not available.")
         return
-
     model_names = list(results.keys())
     if not model_names:
         st.warning("No ML models were selected or processed successfully.")
         return
-
-    # Create tabs for each model
     model_tabs = st.tabs(model_names)
-
     for i, model_name in enumerate(model_names):
         with model_tabs[i]:
             model_result = results[model_name]
             st.markdown(f"#### Results for: {model_name}")
-
-            # Check if this specific model encountered an error
-            if model_result.get("error"):
+            if not isinstance(model_result, dict) or model_result.get("error"):
+                error_msg = model_result.get("error", "Unknown error") if isinstance(
+                    model_result, dict) else "Invalid result format"
                 st.error(
-                    f"Failed to generate results for {model_name}: {model_result['error']}")
-                continue  # Skip to the next model tab
-
-            # Extract results for this model
+                    f"Failed to generate results for {model_name}: {error_msg}")
+                continue
             pred_price = model_result.get('next_day_prediction_price')
             pred_return = model_result.get('next_day_prediction_return')
             last_actual = model_result.get('last_actual_close')
             rmse_returns = model_result.get('rmse_returns')
             feature_importance = model_result.get('feature_importance')
-            # These should be Pandas Series with DateTimeIndex now
             y_test_actual_prices = model_result.get('y_test_actual_prices')
             predictions_prices = model_result.get('predictions_prices')
             features_used = model_result.get('features_used', [])
-
-            # Display Prediction Metrics
             st.markdown("**Prediction & Model Performance**")
             col1, col2 = st.columns(2)
             with col1:
                 delta_str, delta_help = "N/A", ""
-                # Calculate delta vs last actual close if possible
                 if pred_price is not None and last_actual is not None and last_actual != 0:
                     delta = (pred_price / last_actual) - 1
                     delta_str = f"{delta:.2%}"
                     delta_help = f"Change vs last actual close of ${last_actual:.2f}"
-
                 st.metric("Predicted Next Day Close", f"${pred_price:.2f}" if pred_price is not None else "N/A",
-                          delta=delta_str if delta_str != "N/A" else None,
-                          help=f"{model_name}: Model's price forecast. {delta_help}")
+                          delta=delta_str if delta_str != "N/A" else None, help=f"{model_name}: Model's price forecast. {delta_help}")
                 if pred_return is not None:
-                    # Show predicted return
                     st.caption(f"Predicted Return: {pred_return:.4%}")
             with col2:
-                # Display RMSE based on returns
                 st.metric(f"{model_name} Test RMSE (Returns)", f"{rmse_returns:.6f}" if rmse_returns is not None else "N/A",
                           help=f"{model_name}: Typical prediction error for *daily returns* (lower is better).")
-
             st.markdown("---")
-
-            # Display Plots
             plot_col1, plot_col2 = st.columns(2)
             with plot_col1:
                 st.write("**Model Performance on Test Data (Prices)**")
-                # --- Simplified Plotting Logic ---
                 fig = go.Figure()
                 plot_successful = False
-                # Check if both actual and predicted prices are Pandas Series with index
-                if isinstance(y_test_actual_prices, pd.Series) and isinstance(predictions_prices, pd.Series):
-                    # Ensure the indices match (important!)
-                    if y_test_actual_prices.index.equals(predictions_prices.index) and not y_test_actual_prices.empty:
-                        fig.add_trace(go.Scatter(
-                            x=y_test_actual_prices.index,  # Use index directly
-                            y=y_test_actual_prices.values,
-                            mode='lines', name='Actual',
-                            line=dict(color=config.PRIMARY_COLOR, width=2)
-                        ))
-                        fig.add_trace(go.Scatter(
-                            x=predictions_prices.index,  # Use index directly
-                            y=predictions_prices.values,
-                            mode='lines', name=f'{model_name} Predicted',
-                            line=dict(color=config.SECONDARY_COLOR,
-                                      dash='dot', width=2)
-                        ))
-                        plot_successful = True
-                    else:
-                        # Log and warn if indices don't match or data is empty
-                        if y_test_actual_prices.empty:
-                            logger.warning(
-                                f"Plotting skipped for {model_name}: Actual prices Series is empty.")
-                        elif not y_test_actual_prices.index.equals(predictions_prices.index):
-                            logger.warning(
-                                f"Plotting skipped for {model_name}: Index mismatch between actual ({len(y_test_actual_prices.index)}) and predicted ({len(predictions_prices.index)}) prices.")
-                            logger.debug(
-                                f"Actual Index Head: {y_test_actual_prices.index[:5]}")
-                            logger.debug(
-                                f"Predicted Index Head: {predictions_prices.index[:5]}")
-                        st.warning(
-                            f"Index mismatch or empty data for {model_name}. Cannot plot performance.")
+                if isinstance(y_test_actual_prices, pd.Series) and isinstance(predictions_prices, pd.Series) and pd.api.types.is_datetime64_any_dtype(y_test_actual_prices.index) and y_test_actual_prices.index.equals(predictions_prices.index) and not y_test_actual_prices.empty:
+                    fig.add_trace(go.Scatter(x=y_test_actual_prices.index, y=y_test_actual_prices.values,
+                                  mode='lines', name='Actual', line=dict(color=config.PRIMARY_COLOR, width=2)))
+                    fig.add_trace(go.Scatter(x=predictions_prices.index, y=predictions_prices.values, mode='lines',
+                                  name=f'{model_name} Predicted', line=dict(color=config.SECONDARY_COLOR, dash='dot', width=2)))
+                    plot_successful = True
                 else:
-                    # Log and warn if data is not in the expected Series format
                     logger.warning(
-                        f"Plotting skipped for {model_name}: Data not in expected Pandas Series format.")
+                        f"Could not plot performance for {model_name}: Data validation failed.")
                     st.warning(
-                        f"ML plot data for {model_name} is not in the expected format. Cannot plot.")
-
+                        f"Could not plot performance for {model_name}: Data validation failed (check logs).")
                 if plot_successful:
-                    # Update layout only if plotting was successful
-                    fig.update_layout(
-                        template="plotly_dark",
-                        xaxis_title='Date',
-                        yaxis_title='Price (USD)',
-                        height=350,
-                        margin=dict(l=20, r=20, t=30, b=20),
-                        hovermode='x unified',
-                        legend=dict(orientation="h", yanchor="top",
-                                    y=1.15, xanchor="left", x=0)
-                    )
+                    fig.update_layout(template="plotly_dark", xaxis_title='Date', yaxis_title='Price (USD)', height=350, margin=dict(
+                        l=20, r=20, t=30, b=20), hovermode='x unified', legend=dict(orientation="h", yanchor="top", y=1.15, xanchor="left", x=0))
                     st.plotly_chart(fig, use_container_width=True,
                                     key=f"ml_test_plot_{model_name}")
-                # --- End Simplified Plotting Logic ---
-
             with plot_col2:
-                # Display Feature Importance/Coefficients
                 if feature_importance is not None and not feature_importance.empty:
                     st.write("**Feature Influence**")
                     st.caption(
                         f"Top features influencing {model_name}. Used: {', '.join(features_used)}")
-                    # Determine column name ('Importance' for tree models, 'Coefficient' for linear)
-                    importance_col = 'Importance' if 'Importance' in feature_importance.columns else 'Coefficient'
-                    # Create bar chart
-                    fig_feat = px.bar(feature_importance.head(10),  # Show top 10
-                                      x=importance_col, y='Feature', orientation='h',
-                                      height=350, text_auto='.3f',
-                                      labels={importance_col: f'Relative {importance_col}', 'Feature': ''})
-                    # Order bars appropriately
-                    # Use ascending for coefficients too based on absolute value sorting in predictor
-                    yaxis_order = 'total ascending' if importance_col == 'Importance' else 'total ascending'
-                    fig_feat.update_layout(template="plotly_dark", yaxis={'categoryorder': yaxis_order},
-                                           margin=dict(l=10, r=10, t=30, b=20))
-                    # Use consistent color
-                    fig_feat.update_traces(marker_color=config.PRIMARY_COLOR)
-                    st.plotly_chart(fig_feat, use_container_width=True,
-                                    key=f"ml_feature_importance_{model_name}")
+                    importance_col = 'Importance' if 'Importance' in feature_importance.columns else 'Coefficient' if 'Coefficient' in feature_importance.columns else None
+                    if importance_col:
+                        feature_importance[importance_col] = pd.to_numeric(
+                            feature_importance[importance_col], errors='coerce')
+                        feature_importance = feature_importance.dropna(
+                            subset=[importance_col])
+                        sort_key = abs if importance_col == 'Coefficient' else lambda x: x
+                        feature_importance = feature_importance.sort_values(
+                            importance_col, ascending=False, key=sort_key)
+                        fig_feat = px.bar(feature_importance.head(10), x=importance_col, y='Feature', orientation='h', height=350, text_auto='.3f', labels={
+                                          importance_col: f'Relative {importance_col}', 'Feature': ''})
+                        fig_feat.update_layout(template="plotly_dark", yaxis={
+                                               'categoryorder': 'total ascending'}, margin=dict(l=10, r=10, t=30, b=20))
+                        fig_feat.update_traces(
+                            marker_color=config.PRIMARY_COLOR)
+                        st.plotly_chart(
+                            fig_feat, use_container_width=True, key=f"ml_feature_importance_{model_name}")
+                    else:
+                        st.warning(
+                            f"Could not determine importance/coefficient column for {model_name}.")
                 else:
                     st.warning(
                         f"Feature importance/coefficients not available for {model_name}.")
-
     st.caption(
         "ML predictions predict daily returns & reconstruct price. Experimental only. Not investment advice.")
 
 
 # --- ESG Scores Display ---
-# (display_esg_scores function remains the same)
-# Changed type hint for scores
 def display_esg_scores(scores: Optional[Dict[str, Any]], symbol: str):
     logger.info(f"Displaying ESG scores for {symbol}.")
     st.subheader(f"ESG Performance for {symbol}")
-    if scores is None:  # Check for None explicitly
+    if scores is None:
         st.info(
             f"ESG scores unavailable or could not be retrieved for {symbol}.")
         return
-    if not scores:  # Check for empty dictionary
+    if not scores:
         st.info(
             f"No specific ESG scores found for {symbol}, although sustainability data might exist.")
         return
-
-    # Prepare data for plotting, handling potential non-numeric values if any slipped through
     esg_data = []
-    # Map standard keys to display labels and extract scores
-    score_map_display = {
-        'Total ESG Score': scores.get('Total ESG Score'),
-        'Environmental Score': scores.get('Environmental Score'),
-        'Social Score': scores.get('Social Score'),
-        'Governance Score': scores.get('Governance Score'),
-        # Often a level, not score
-        'Highest Controversy': scores.get('Highest Controversy')
-    }
-
+    score_map_display = {'Total ESG Score': scores.get('Total ESG Score'), 'Environmental Score': scores.get('Environmental Score'), 'Social Score': scores.get(
+        'Social Score'), 'Governance Score': scores.get('Governance Score'), 'Highest Controversy': scores.get('Highest Controversy')}
     for label, value in score_map_display.items():
-        # Ensure value is numeric before adding
         if value is not None and pd.api.types.is_number(value) and pd.notna(value):
             esg_data.append({'Category': label, 'Score': float(value)})
-        # Optionally handle non-numeric controversy level differently if needed
-        # elif label == 'Highest Controversy' and value is not None:
-        #     st.caption(f"Highest Controversy Level: {value}") # Display separately?
-
+        elif value is not None:
+            logger.debug(f"Non-numeric ESG value found for {label}: {value}")
     if not esg_data:
-        st.info("Could not extract formatted ESG scores for plotting.")
+        st.info("Could not extract formatted numeric ESG scores for plotting.")
+        if scores:
+            st.json(scores)  # Display raw scores if available
         return
-
-    # Create Bar Chart
     esg_df = pd.DataFrame(esg_data)
-    fig = px.bar(esg_df, x='Category', y='Score', text='Score', color='Category',
-                 # Clarify axis label
-                 labels={'Score': 'Score (Lower is often better for Risk)'})
-    # Format text on bars
+    fig = px.bar(esg_df, x='Category', y='Score', text='Score', color='Category', labels={
+                 'Score': 'Score (Lower is often better for Risk)'})
     fig.update_traces(texttemplate='%{text:.1f}', textposition='outside')
-    # Update layout
-    fig.update_layout(template="plotly_dark", xaxis_title="", height=400,
-                      margin=dict(l=20, r=20, t=30, b=20), showlegend=False)
+    fig.update_layout(template="plotly_dark", xaxis_title="", height=400, margin=dict(
+        l=20, r=20, t=30, b=20), showlegend=False)
     st.plotly_chart(fig, use_container_width=True, key="esg_chart")
-    st.caption("ESG scores typically from providers like Sustainalytics via yfinance. Lower scores often indicate lower unmanaged ESG risk.")
+    st.caption("ESG scores typically from providers like Sustainalytics via yfinance. Lower scores often indicate lower unmanaged ESG risk. Interpretation varies.")
 
 
 # --- Earnings Calendar Display ---
-# (display_earnings_calendar function remains the same)
 def display_earnings_calendar(calendar_df: Optional[pd.DataFrame], symbol: str):
     logger.info(f"Displaying earnings calendar for {symbol}.")
     st.subheader(f"Earnings Calendar for {symbol}")
     if calendar_df is None or calendar_df.empty:
         st.info(f"No earnings data found or available for {symbol}.")
         return
-
     display_df = calendar_df.copy()
-
-    # Ensure 'Earnings Date' is datetime and handle errors
-    display_df['Earnings Date'] = pd.to_datetime(
-        display_df['Earnings Date'], errors='coerce')
-    # Drop rows where date conversion failed
-    display_df = display_df.dropna(subset=['Earnings Date'])
-
-    # Filter for recent past and near future dates for relevance
-    today = pd.Timestamp.today().normalize()
-    display_df = display_df[
-        # Look back 90 days
-        (display_df['Earnings Date'] >= today - pd.Timedelta(days=90)) &
-        (display_df['Earnings Date'] <= today +
-         pd.Timedelta(days=180))  # Look forward 180 days
-    ].sort_values('Earnings Date')
-
-    if display_df.empty:
-        st.info(f"No recent or upcoming earnings dates found in the typical range.")
+    if 'Earnings Date' in display_df.columns:
+        display_df['Earnings Date'] = pd.to_datetime(
+            display_df['Earnings Date'], errors='coerce')
+        display_df = display_df.dropna(subset=['Earnings Date'])
+    else:
+        st.warning("Earnings data missing 'Earnings Date' column.")
         return
-
-    # Format date for display
+    today = pd.Timestamp.today().normalize()
+    display_df = display_df[(display_df['Earnings Date'] >= today - pd.Timedelta(days=90)) & (
+        display_df['Earnings Date'] <= today + pd.Timedelta(days=180))].sort_values('Earnings Date')
+    if display_df.empty:
+        st.info(
+            f"No recent or upcoming earnings dates found in the typical range (-90d to +180d).")
+        return
     display_df['Earnings Date'] = display_df['Earnings Date'].dt.strftime(
         '%b %d, %Y')
-
-    # Format numeric columns safely, showing 'N/A' or '-' for missing values
     currency_cols = ['Earnings Average', 'Earnings Low', 'Earnings High']
     revenue_cols = ['Revenue Average', 'Revenue Low', 'Revenue High']
-
     for col in currency_cols:
         if col in display_df.columns:
             display_df[col] = display_df[col].apply(
                 lambda x: f"${x:,.2f}" if pd.notna(x) else '-')
     for col in revenue_cols:
         if col in display_df.columns:
-            # Format large revenue numbers in millions/billions for readability
-            display_df[col] = display_df[col].apply(lambda x: f"${x/1e9:,.1f}B" if pd.notna(x) and abs(x) >= 1e9 else (
-                f"${x/1e6:,.1f}M" if pd.notna(x) and abs(x) >= 1e6 else (f"${x:,.0f}" if pd.notna(x) else '-')))
-
-    # Select and order columns for display
+            display_df[col] = display_df[col].apply(
+                lambda x: format_value(x) if pd.notna(x) else '-')
     potential_cols = ['Earnings Date', 'Earnings Average', 'Revenue Average',
                       'Earnings Low', 'Earnings High', 'Revenue Low', 'Revenue High']
     display_cols = [c for c in potential_cols if c in display_df.columns]
-
-    # Set Date as index for better table display
     if 'Earnings Date' in display_cols:
         display_df = display_df.set_index('Earnings Date')
-        # Remove from list of columns to display
         display_cols.remove('Earnings Date')
-
-    # Display the DataFrame
-    # Display only remaining columns
     st.dataframe(display_df[display_cols], use_container_width=True)
     st.caption("Recent/Upcoming earnings dates and estimates (Source: yfinance).")
 
 
 # --- Dividend History Display ---
-# (display_dividend_history function remains the same)
 def display_dividend_history(dividends: Optional[pd.Series], symbol: str):
     logger.info(f"Displaying dividend history for {symbol}.")
     st.subheader(f"Dividend History for {symbol}")
     if dividends is None or dividends.empty:
         st.info(f"No dividend history found or available for {symbol}.")
         return
-
-    # Ensure index is datetime
     if not pd.api.types.is_datetime64_any_dtype(dividends.index):
         try:
             dividends.index = pd.to_datetime(dividends.index)
         except Exception as e:
             logger.warning(f"Could not parse dividend dates: {e}")
             st.warning(
-                "Could not display dividend history due to date parsing issues.")
+                "Could not display dividend history (date parsing issues).")
             return
-
-    # Create plot
-    fig = px.bar(
-        x=dividends.index,
-        y=dividends.values,
-        labels={'x': 'Date', 'y': 'Dividend per Share ($)'},  # Clearer labels
-        height=400
-    )
-    # Use positive color from config
+    fig = px.bar(x=dividends.index, y=dividends.values, labels={
+                 'x': 'Date', 'y': 'Dividend per Share ($)'}, height=400)
     fig.update_traces(marker_color=config.POSITIVE_COLOR)
-    # Update layout
-    fig.update_layout(
-        template="plotly_dark",
-        margin=dict(l=20, r=20, t=30, b=20),
-    )
+    fig.update_layout(template="plotly_dark",
+                      margin=dict(l=20, r=20, t=30, b=20))
     st.plotly_chart(fig, use_container_width=True,
                     key="dividend_history_chart")
     st.caption("Historical dividend payments per share (Source: yfinance).")
 
 
 # --- Sector Performance Display ---
-# (display_sector_performance function remains the same)
 def display_sector_performance():
-    """ Fetches and displays recent sector performance using ETFs. """
     logger.info("Fetching and displaying sector performance.")
-    # SPDR Sector ETFs + S&P 500
-    sectors = {
-        "XLK": "Technology", "XLV": "Healthcare", "XLF": "Financials",
-        "XLY": "Cons. Disc.", "XLC": "Comm. Svcs.", "XLI": "Industrials",
-        "XLP": "Cons. Staples", "XLU": "Utilities", "XLRE": "Real Estate",
-        "XLB": "Materials", "XLE": "Energy", "SPY": "S&P 500"
-    }
+    sectors = {"XLK": "Technology", "XLV": "Healthcare", "XLF": "Financials", "XLY": "Cons. Disc.", "XLC": "Comm. Svcs.", "XLI": "Industrials",
+               "XLP": "Cons. Staples", "XLU": "Utilities", "XLRE": "Real Estate", "XLB": "Materials", "XLE": "Energy", "SPY": "S&P 500"}
     performance = {}
-    # Use a standard period like '1mo' or '3mo'
-    period = "1mo"  # Lookback period for performance calculation
+    period = "1mo"
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=45)
     etf_symbols = list(sectors.keys())
-
     try:
-        # Download data for the specified period
-        data = yf.download(etf_symbols, period=period,
-                           progress=False, auto_adjust=True)
-
+        data = yf.download(etf_symbols, start=start_date.strftime(
+            config.DATE_FORMAT), end=end_date.strftime(config.DATE_FORMAT), progress=False, auto_adjust=True)
         if data.empty or 'Close' not in data:
             raise ValueError(
-                f"No valid sector ETF data for period '{period}'.")
-
+                f"No valid sector ETF data for period {start_date.date()} to {end_date.date()}.")
         close_prices = data['Close']
-        # Ensure enough data points for calculation
-        if len(close_prices) < 2:
-            raise ValueError(
-                f"Insufficient data points ({len(close_prices)}) in period '{period}'.")
-
-        # Calculate percentage change from the first to the last day in the period
-        start_prices = close_prices.iloc[0]
-        end_prices = close_prices.iloc[-1]
-        pct_change = ((end_prices - start_prices) / start_prices) * 100
-
-        # Map performance back to sector names
         for etf, sector_name in sectors.items():
-            if etf in pct_change.index and pd.notna(pct_change[etf]):
-                performance[sector_name] = pct_change[etf]
+            if etf in close_prices.columns:
+                etf_series = close_prices[etf].dropna()
+                if len(etf_series) >= 2:
+                    start_price = etf_series.iloc[0]
+                    end_price = etf_series.iloc[-1]
+                    performance[sector_name] = (
+                        (end_price - start_price) / start_price) * 100 if start_price != 0 else 0.0
+                else:
+                    logger.warning(
+                        f"Insufficient data points ({len(etf_series)}) for {sector_name} ({etf}).")
+                    performance[sector_name] = None
             else:
-                logger.warning(
-                    f"Data missing or NaN for {etf} ({sector_name}) in period '{period}'.")
-                # Mark as None if data is missing/NaN
+                logger.warning(f"Data for sector ETF {etf} not found.")
                 performance[sector_name] = None
-
     except Exception as e:
         logger.error(
             f"Error fetching/processing sector data: {e}", exc_info=True)
-        st.warning("Could not retrieve sector performance data at this time.")
+        st.warning("Could not retrieve sector performance data.")
         return
-
-    # Filter out sectors where calculation failed
     valid_performance = {k: v for k, v in performance.items() if v is not None}
     if not valid_performance:
-        st.warning(
-            f"No valid sector performance data could be calculated for period '{period}'.")
+        st.warning(f"No valid sector performance data calculated.")
         return
-
-    # Create DataFrame and plot
     df_perf = pd.DataFrame(list(valid_performance.items()), columns=[
-                           "Sector/Index", f"{period} % Change"])
-    df_perf = df_perf.sort_values(
-        f"{period} % Change", ascending=False)  # Sort by performance
+                           "Sector/Index", f"{period} % Change"]).sort_values(f"{period} % Change", ascending=False)
+    fig = px.bar(df_perf, x="Sector/Index", y=f"{period} % Change", title=f"Sector & S&P 500 Performance (Approx. {period})",
+                 color=f"{period} % Change", color_continuous_scale='RdYlGn', labels={f"{period} % Change": "% Change"}, height=400)
+    fig.update_layout(template="plotly_dark", xaxis_tickangle=-
+                      45, margin=dict(l=20, r=20, t=40, b=20))
+    st.plotly_chart(fig, use_container_width=True, key="sector_perf_chart_v3")
 
-    fig = px.bar(
-        df_perf,
-        x="Sector/Index",
-        y=f"{period} % Change",
-        title=f"Sector & S&P 500 Performance ({period})",
-        color=f"{period} % Change",
-        color_continuous_scale='RdYlGn',  # Red -> Yellow -> Green scale
-        labels={f"{period} % Change": "% Change"},
-        height=400
-    )
-    # Update layout for better readability
-    fig.update_layout(
-        template="plotly_dark",
-        xaxis_tickangle=-45,  # Angle labels
-        margin=dict(l=20, r=20, t=40, b=20)
-    )
+
+# --- Economic Indicators Display ---
+def display_economic_indicators(economic_data: Optional[pd.DataFrame], stock_data: Optional[pd.DataFrame] = None):
+    logger.info("Displaying economic indicators.")
+    st.subheader("Economic Indicators")
+    if economic_data is None or economic_data.empty:
+        st.info("No economic indicator data fetched or available.")
+        return
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    colors = px.colors.qualitative.Plotly
+    for i, indicator in enumerate(economic_data.columns):
+        fig.add_trace(go.Scatter(x=economic_data.index, y=economic_data[indicator], name=indicator, mode='lines', line=dict(
+            color=colors[i % len(colors)])), secondary_y=False)
+    primary_axis_title = "Indicator Value"
+    secondary_axis_title = "Stock Price ($)"
+    show_secondary = False
+    if stock_data is not None and not stock_data.empty and 'Close' in stock_data.columns and 'Date' in stock_data.columns:
+        stock_plot_data = stock_data.set_index(
+            'Date') if 'Date' in stock_data.columns else stock_data
+        if pd.api.types.is_datetime64_any_dtype(stock_plot_data.index):
+            fig.add_trace(go.Scatter(x=stock_plot_data.index, y=stock_plot_data['Close'], name="Stock Price", mode='lines', line=dict(
+                color='rgba(200, 200, 200, 0.5)', dash='dot')), secondary_y=True)
+            show_secondary = True
+        else:
+            logger.warning(
+                "Could not overlay stock price on economic chart (Date index issue).")
+    fig.update_layout(template="plotly_dark", title="Selected Economic Indicators Over Time" + (" (Stock Price Overlay)" if show_secondary else ""), height=500, hovermode='x unified', legend_title_text='Series', legend=dict(
+        orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0), yaxis=dict(title_text=primary_axis_title), yaxis2=dict(title_text=secondary_axis_title, overlaying='y', side='right', showgrid=False) if show_secondary else None)
+    fig.update_xaxes(type='date')
     st.plotly_chart(fig, use_container_width=True,
-                    key="sector_perf_chart_v2")  # Use unique key
+                    key="economic_indicators_chart")
+    st.caption("Source: FRED (Federal Reserve Economic Data)")

@@ -13,12 +13,14 @@ NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/"
 GEMINI_CHAT_MODEL = "models/gemini-1.5-flash-latest"
+FRED_API_KEY = os.getenv("FRED_API_KEY")
 
 # --- Application Constants ---
 LOG_DIRECTORY = 'logs'
 DATE_FORMAT = "%Y-%m-%d"
 DEFAULT_STOCK_SYMBOL = "AAPL"
 DEFAULT_COMPANY_NAME = "Apple Inc."
+DEFAULT_ECONOMIC_SERIES = ['GDP', 'CPIAUCNS', 'FEDFUNDS', 'UNRATE']
 MIN_INVESTMENT = 1000
 DEFAULT_INVESTMENT = 10000
 DEFAULT_PORTFOLIO_STOCKS = "AAPL, GOOGL, MSFT"

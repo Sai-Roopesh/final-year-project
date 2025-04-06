@@ -102,6 +102,18 @@ def display_sidebar(defaults: Dict[str, Any]) -> Dict[str, Any]:
 
     st.sidebar.markdown("---")
 
+    st.sidebar.subheader("Sentiment Analysis")
+    sentiment_method = st.sidebar.radio(
+        "Select Method",
+        ('VADER', 'FinBERT'),
+        index=0 if defaults.get(
+            'sentiment_method', 'VADER') == 'VADER' else 1,  # Default to VADER
+        key="radio_sentiment",
+        horizontal=True,
+        help="Choose the sentiment analysis engine. FinBERT is slower but potentially more accurate for financial news."
+    )
+    st.sidebar.markdown("---")
+
     # --- Forecast ---
     st.sidebar.subheader("Forecast")
     prediction_days = st.sidebar.slider(
@@ -161,6 +173,23 @@ def display_sidebar(defaults: Dict[str, Any]) -> Dict[str, Any]:
         run_esg = st.checkbox("ESG Performance", value=defaults.get(
             'run_esg', False), key="cb_esg")
 
+        run_economic = st.checkbox(
+            "Economic Indicators (FRED)",
+            value=defaults.get('run_economic', False),  # Default to False
+            key="cb_economic",
+            help="Fetch and display relevant macroeconomic indicators from FRED."
+        )
+        economic_series_input_str = ",".join(
+            config.DEFAULT_ECONOMIC_SERIES)  # Get default from config
+        if run_economic:
+            economic_series_input_str = st.text_input(
+                "FRED Series IDs",
+                defaults.get('economic_series_input',
+                             economic_series_input_str),
+                key="txt_economic_series",
+                help="Comma-separated FRED series IDs (e.g., GDP,CPIAUCNS,FEDFUNDS)."
+            )
+
     # --- Additional Data Options ---
     with st.sidebar.expander("Additional Data", expanded=True):
         show_dividends = st.checkbox("Dividend History", value=defaults.get(
@@ -208,5 +237,9 @@ def display_sidebar(defaults: Dict[str, Any]) -> Dict[str, Any]:
         # "show_earnings": show_earnings,
         "show_sector": show_sector,
         "show_tooltips": show_tooltips,
-        "submitted": submitted
+        "submitted": submitted,
+        "run_economic": run_economic,
+        "economic_series_input": economic_series_input_str,
+        "submitted": submitted,
+        "sentiment_method": sentiment_method,
     }

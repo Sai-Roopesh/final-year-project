@@ -12,3 +12,6 @@ pandas
 numpy
 seaborn
 scikit-learn
+fredapi
+transformers
+torch
