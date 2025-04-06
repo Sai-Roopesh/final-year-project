@@ -1,0 +1,13 @@
+streamlit
+streamlit_autorefresh
+yfinance
+newsapi-python
+openai
+python-dotenv
+prophet
+scikit-learn
+nltk
+plotly
+pandas
+numpy
+seaborn
