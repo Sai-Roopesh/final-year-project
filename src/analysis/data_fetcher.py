@@ -25,90 +25,136 @@ class DataFetcher:
     def __init__(self, newsapi_client: Optional[NewsApiClient], gemini_client: Optional[OpenAI]):
         self.newsapi = newsapi_client
         self.gemini = gemini_client
+        self.logger = utils.logger  # Assign the imported logger to the instance
 
     # get_stock_symbol method remains the same
+
     @st.cache_data(show_spinner="Fetching stock symbol...")
+    # Use '_self' consistent with your codebase
     def get_stock_symbol(_self, company_name_or_symbol: str) -> Optional[str]:
-        """Resolves a company name or validates a symbol using Gemini or yfinance."""
+        """
+        Resolves a company name or symbol using Gemini first, then verifies with yfinance.
+        Attempts to get exchange suffix (.NS for India NSE) via Gemini.
+        """
         if not company_name_or_symbol or not isinstance(company_name_or_symbol, str):
-            logger.warning("get_stock_symbol called with invalid input.")
+            _self.logger.warning("get_stock_symbol called with invalid input.")
             return None
-        cleaned_input = company_name_or_symbol.strip().upper()
-        is_likely_symbol = all(c.isalnum() or c == '.' for c in cleaned_input) and len(
-            cleaned_input) <= 10
-        if is_likely_symbol:
-            try:
-                logger.info(
-                    f"Input '{cleaned_input}' looks like symbol. Verifying with yfinance...")
-                test_ticker = yf.Ticker(cleaned_input)
-                if test_ticker.info and test_ticker.info.get('regularMarketPrice') is not None:
-                    logger.info(
-                        f"yfinance verified '{cleaned_input}' as a valid symbol.")
-                    return cleaned_input
-                else:
-                    if test_ticker.info:
-                        logger.warning(
-                            f"yfinance found info for '{cleaned_input}' but no market price. Treating as potentially invalid.")
-                    else:
-                        logger.warning(
-                            f"yfinance did not return valid info for likely symbol '{cleaned_input}'.")
-            except Exception as e:
-                logger.warning(
-                    f"yfinance check for '{cleaned_input}' failed: {e}. Will try Gemini.")
+
+        # Keep original case for Gemini query
+        cleaned_input = company_name_or_symbol.strip()
+
+        # --- REMOVED Initial yfinance Check ---
+        # The logic to check is_likely_symbol and verify with yfinance *before*
+        # calling Gemini has been removed to prioritize the Gemini lookup.
+
+        # --- Gemini Lookup (Now runs first for all non-empty inputs) ---
         if not _self.gemini:
-            logger.error(
-                "Gemini client not available for symbol lookup by name.")
-            if not is_likely_symbol:
-                st.error(
-                    "AI Assistant not configured. Cannot look up symbol by name.")
-            return None
-        logger.info(
-            f"Attempting to resolve symbol for '{company_name_or_symbol}' using Gemini.")
-        prompt = (f"What is the primary stock ticker symbol for the company named '{company_name_or_symbol}'? "
-                  f"Return ONLY the stock ticker symbol itself (e.g., AAPL, GOOGL). "
-                  f"If ambiguous or not found, return 'NOT_FOUND'.")
+            _self.logger.error(
+                "Gemini client not available for symbol lookup.")
+            st.error(
+                "AI Assistant (Gemini client) is not configured. Cannot resolve symbol.")
+            # As a fallback, try verifying the user input directly IF it looks like a symbol
+            cleaned_upper = cleaned_input.upper()
+            is_likely_symbol_fallback = all(c.isalnum(
+            ) or c == '.' or c == '-' for c in cleaned_upper) and len(cleaned_upper) <= 12
+            if is_likely_symbol_fallback:
+                _self.logger.warning(
+                    f"Gemini unavailable. Attempting direct verification of input '{cleaned_upper}'")
+                try:
+                    test_ticker = yf.Ticker(cleaned_upper)
+                    if not test_ticker.history(period="5d").empty:
+                        _self.logger.info(
+                            f"Direct yfinance verification PASSED for '{cleaned_upper}'.")
+                        return cleaned_upper
+                    else:
+                        _self.logger.warning(
+                            f"Direct yfinance verification FAILED for '{cleaned_upper}'.")
+                        return None
+                except Exception as e:
+                    _self.logger.error(
+                        f"Direct yfinance verification FAILED for '{cleaned_upper}' with error: {e}")
+                    return None
+            else:
+                return None  # Cannot resolve without Gemini if input doesn't look like symbol
+
+        _self.logger.info(
+            f"Attempting to resolve symbol for '{cleaned_input}' using Gemini.")
+
+        # Prompt to get the exchange-specific symbol
+        prompt = (
+            f"What is the primary stock ticker symbol for the company or entity '{cleaned_input}'? "
+            f"Include the exchange suffix if it's commonly used and not a major US exchange. "
+            f"For example, for companies listed primarily on India's National Stock Exchange (NSE), append '.NS'. "
+            f"For US stocks (NYSE/NASDAQ), return just the symbol (e.g., AAPL, GOOGL). "
+            f"For Indian NSE stocks, return symbol.NS (e.g., RELIANCE.NS). "
+            f"Return ONLY the stock ticker symbol itself. "
+            f"If ambiguous, multiple listings exist, or not found, return 'NOT_FOUND'."
+        )
+
         try:
             response = _self.gemini.chat.completions.create(
                 model=config.GEMINI_CHAT_MODEL,
                 messages=[
-                    {"role": "system", "content": "Provide only the stock ticker symbol."},
+                    {"role": "system", "content": "Provide only the stock ticker symbol, including relevant exchange suffix like .NS for NSE India if applicable."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=20, temperature=0.0
+                max_tokens=25,
+                temperature=0.0
             )
+            # Convert to upper for consistency
             symbol = response.choices[0].message.content.strip().upper()
-            logger.info(
-                f"Gemini returned: '{symbol}' for '{company_name_or_symbol}'")
-            if not symbol or 'NOT_FOUND' in symbol or len(symbol) > 10 or not all(c.isalnum() or c == '.' for c in symbol):
-                logger.warning(
+            _self.logger.info(
+                f"Gemini returned: '{symbol}' for '{cleaned_input}'")
+
+            # Validation (allow dot for suffixes)
+            if not symbol or 'NOT_FOUND' in symbol or len(symbol) > 12 or not all(c.isalnum() or c == '.' or c == '-' for c in symbol):
+                _self.logger.warning(
                     f"Gemini returned invalid or 'NOT_FOUND' symbol: '{symbol}'.")
+                st.error(
+                    f"AI Assistant could not confidently determine a valid symbol for '{cleaned_input}'. Received: {symbol}")
                 return None
+
+            # --- Final Verification with yfinance (Crucial) ---
+            _self.logger.info(
+                f"Verifying Gemini's symbol '{symbol}' with yfinance...")
             try:
-                logger.info(
-                    f"Verifying Gemini's symbol '{symbol}' with yfinance...")
                 test_ticker = yf.Ticker(symbol)
-                if test_ticker.info and test_ticker.info.get('regularMarketPrice') is not None:
-                    logger.info(
-                        f"yfinance verified Gemini's symbol '{symbol}'.")
+                # Use history fetch as the primary verification method - more reliable than info for existence
+                if not test_ticker.history(period="5d").empty:
+                    _self.logger.info(
+                        f"yfinance verified Gemini's symbol '{symbol}' via history fetch.")
+                    return symbol
+                # Fallback to info check if history fails for some reason
+                elif test_ticker.info and (test_ticker.info.get('symbol') == symbol or test_ticker.info.get('regularMarketPrice') is not None):
+                    _self.logger.warning(
+                        f"yfinance history fetch failed for '{symbol}', but info seems valid. Accepting symbol.")
                     return symbol
                 else:
-                    logger.warning(
-                        f"yfinance did not return valid info for Gemini's symbol '{symbol}'.")
+                    _self.logger.warning(
+                        f"yfinance could not reliably verify Gemini's symbol '{symbol}' via history or info.")
+                    st.error(
+                        f"AI Assistant suggested '{symbol}', but it could not be verified via yfinance.")
                     return None
             except Exception as e:
-                logger.warning(
+                _self.logger.warning(
                     f"yfinance verification failed for Gemini's symbol '{symbol}': {e}")
+                st.error(
+                    f"Error verifying the symbol '{symbol}' suggested by the AI Assistant.")
                 return None
+            # --- End Final Verification ---
+
         except Exception as e:
-            logger.error(
+            _self.logger.error(
                 f"Error during Gemini symbol lookup: {e}", exc_info=True)
             st.error(f"Error looking up stock symbol via AI: {e}")
             return None
-        logger.error(
-            f"Symbol resolution failed for '{company_name_or_symbol}' after all checks.")
-        return None
 
+        # Fallback if logic somehow fails (shouldn't be reached)
+        _self.logger.error(
+            f"Symbol resolution failed unexpectedly for '{cleaned_input}'.")
+        return None
     # load_stock_data method remains the same
+
     @st.cache_data(show_spinner="Fetching historical stock data...")
     def load_stock_data(_self, symbol: str, start_date: datetime, end_date: datetime, retries: int = 3, delay: int = 2) -> Optional[pd.DataFrame]:
         """Fetches and normalizes historical stock data from yfinance with retries."""
@@ -208,6 +254,117 @@ class DataFetcher:
             logger.error(
                 f"Error fetching news for '{query}': {e}", exc_info=True)
             st.error(f"Error fetching news from NewsAPI: {e}")
+            return []
+
+    # Assuming necessary imports like List, Dict, Any, Optional, pd, yf, st are present at the file level
+    # Also assuming 'utils' and 'logger' are correctly imported and assigned in __init__
+
+    # Assuming necessary imports like List, Dict, Any, Optional, pd, yf, st are present at the file level
+    # Also assuming 'utils' and 'logger' are correctly imported and assigned in __init__
+
+    @st.cache_data(show_spinner="Fetching yfinance news...")
+    # Use '_self' to match your codebase convention
+    def load_yfinance_news(_self, symbol: str) -> List[Dict[str, Any]]:
+        """Fetches news articles directly from yfinance using get_news()."""
+        _self.logger.info(
+            f"Fetching yfinance news for {symbol} using get_news().")
+        try:
+            ticker = yf.Ticker(symbol)
+            yf_news = ticker.get_news()
+
+            _self.logger.info(
+                f"Raw yfinance get_news() output for {symbol}: Type={type(yf_news)}, Content={yf_news}")
+
+            if not isinstance(yf_news, list) or not yf_news:
+                _self.logger.info(
+                    f"No news found via yfinance get_news() for {symbol}.")
+                return []
+
+            normalized_news = []
+            # --- MODIFIED LOOP ---
+            for article_wrapper in yf_news:  # Loop through the outer list
+                # Check if item is a dict and has the 'content' key
+                if not isinstance(article_wrapper, dict) or 'content' not in article_wrapper:
+                    _self.logger.warning(
+                        f"Skipping invalid/incomplete yfinance news item: {article_wrapper}")
+                    continue
+
+                # Get the nested 'content' dictionary
+                article = article_wrapper.get('content')
+
+                # Check if the nested content is also a dictionary
+                if not isinstance(article, dict):
+                    _self.logger.warning(
+                        f"Skipping yfinance news item with invalid nested content: {article}")
+                    continue
+
+                # --- UPDATED Key Mapping and Timestamp Handling ---
+                # Now access keys from the nested 'article' dictionary
+                # Use 'pubDate' based on logs
+                pub_date_val = article.get('pubDate')
+                published_at_iso = None
+                if pub_date_val:
+                    try:
+                        # Parse the ISO-like string provided by yfinance
+                        published_at_iso = pd.to_datetime(
+                            pub_date_val, utc=True).isoformat()
+                    except (ValueError, TypeError, OverflowError) as ts_err:
+                        _self.logger.warning(
+                            f"Could not parse timestamp '{pub_date_val}' for article '{article.get('title', '')[:30]}...': {ts_err}")
+
+                # Extract URL carefully - check nested structure from logs
+                article_url = None
+                if isinstance(article.get('canonicalUrl'), dict):
+                    article_url = article['canonicalUrl'].get('url')
+                # Fallback
+                if not article_url and isinstance(article.get('clickThroughUrl'), dict):
+                    article_url = article['clickThroughUrl'].get('url')
+                if not article_url:  # Final fallback if needed
+                    # Check outer dict link as last resort
+                    article_url = article_wrapper.get('link')
+
+                # Extract provider name
+                provider_name = 'Unknown Source'
+                if isinstance(article.get('provider'), dict):
+                    provider_name = article['provider'].get(
+                        'displayName', provider_name)
+
+                normalized_article = {
+                    'title': article.get('title'),
+                    'url': article_url,  # Use extracted URL
+                    # Use extracted provider name
+                    'source': {'name': provider_name},
+                    'publishedAt': published_at_iso,
+                    # Use summary or title
+                    'description': article.get('summary') or article.get('title') or "",
+                    # Use summary or title
+                    'content': article.get('summary') or article.get('title') or ""
+                }
+                # --- END UPDATED Key Mapping ---
+
+                # Add only if essential fields exist (title and URL)
+                if normalized_article.get('title') and normalized_article.get('url'):
+                    normalized_news.append(normalized_article)
+                else:
+                    _self.logger.warning(
+                        f"Skipping yfinance article due to missing title or url after normalization. Data: {normalized_article}")
+
+            # --- END MODIFIED LOOP ---
+
+            _self.logger.info(
+                f"Fetched and normalized {len(normalized_news)} news articles from yfinance get_news() for {symbol}.")
+            return normalized_news
+
+        except AttributeError as ae:
+            _self.logger.error(
+                f"'get_news()' method not found for yfinance Ticker object for {symbol}. Maybe yfinance version is old? Error: {ae}")
+            st.error(
+                f"Failed to fetch yfinance news for {symbol}. The library version might be incompatible.")
+            return []
+        except Exception as e:
+            _self.logger.error(
+                f"Error fetching yfinance news for {symbol}: {e}", exc_info=True)
+            st.error(f"Error fetching news from yfinance for {symbol}: {e}")
             return []
 
     # esg_scoring method remains the same

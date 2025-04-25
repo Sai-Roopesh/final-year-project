@@ -2,7 +2,7 @@
 
 import streamlit as st  # Needed for caching
 import pandas as pd
-import logging as logger
+import logging as logger  # Keep logging import consistent
 from typing import List, Dict, Any, Tuple, Optional
 import nltk
 from datetime import datetime
@@ -10,6 +10,13 @@ import numpy as np
 import torch  # Added for FinBERT
 # Added for FinBERT
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+# Import config and utils from the src package
+from src import config, utils
+
+# --- Setup Logger ---
+# Use the logger instance from utils
+logger = utils.logger  # Correctly reference the logger from utils
 
 try:
     from nltk.sentiment.vader import SentimentIntensityAnalyzer
@@ -20,10 +27,7 @@ except LookupError:
         from nltk.sentiment.vader import SentimentIntensityAnalyzer
     except Exception as e:
         logger.error(f"Failed to download or import VADER lexicon: {e}")
-        SentimentIntensityAnalyzer = None
-
-from src import config, utils
-logger = utils.logger
+        SentimentIntensityAnalyzer = None  # Ensure it's None if download fails
 
 # --- FinBERT Model Loading (Cached) ---
 
@@ -107,15 +111,20 @@ class SentimentAnalysis:
                         'compound': compound_score, 'label': label, 'score': compound_score}
                     sentiments_compound.append(compound_score)
 
-                    pub_date_str = article.get('publishedAt', '')[:10]
+                    # --- MODIFIED DATE HANDLING ---
+                    # Get full ISO string or YYYY-MM-DD
+                    pub_date_str = article.get('publishedAt', '')
                     if pub_date_str:
                         try:
-                            datetime.strptime(pub_date_str, config.DATE_FORMAT)
+                            # Parse ISO or YYYY-MM-DD format and get only the date part as string
+                            pub_date_formatted = pd.to_datetime(pub_date_str).strftime(
+                                config.DATE_FORMAT)  # Convert to YYYY-MM-DD
                             daily_sentiment_scores.setdefault(
-                                pub_date_str, []).append(compound_score)
-                        except ValueError:
+                                pub_date_formatted, []).append(compound_score)
+                        except Exception as date_err:  # Catch broader errors during parsing/formatting
                             logger.debug(
-                                f"Invalid date format '{pub_date_str}' in article (VADER).")
+                                f"Invalid date format or conversion error for '{pub_date_str}' in article (VADER): {date_err}")
+                    # --- END MODIFIED DATE HANDLING ---
 
                 except Exception as e:
                     logger.warning(
@@ -189,11 +198,6 @@ class SentimentAnalysis:
                         predicted_label = model.config.id2label[predicted_label_id]
                         predicted_score = scores.item()
 
-                        # Store detailed FinBERT results if needed
-                        # article_with_sentiment['sentiment_finbert_probs'] = probabilities.tolist()[0]
-                        # article_with_sentiment['sentiment_finbert_label'] = predicted_label
-                        # article_with_sentiment['sentiment_finbert_score'] = predicted_score
-
                         # Store standardized results
                         article_with_sentiment['sentiment'] = {
                             'label': predicted_label, 'score': predicted_score}
@@ -202,17 +206,20 @@ class SentimentAnalysis:
                         mapped_score = label_to_score.get(predicted_label, 0)
                         sentiments_mapped.append(mapped_score)
 
-                        # Store daily mapped score
-                        pub_date_str = article.get('publishedAt', '')[:10]
+                        # --- MODIFIED DATE HANDLING ---
+                        # Get full ISO string or YYYY-MM-DD
+                        pub_date_str = article.get('publishedAt', '')
                         if pub_date_str:
                             try:
-                                datetime.strptime(
-                                    pub_date_str, config.DATE_FORMAT)
+                                # Parse ISO or YYYY-MM-DD format and get only the date part as string
+                                pub_date_formatted = pd.to_datetime(pub_date_str).strftime(
+                                    config.DATE_FORMAT)  # Convert to YYYY-MM-DD
                                 daily_sentiment_scores.setdefault(
-                                    pub_date_str, []).append(mapped_score)
-                            except ValueError:
+                                    pub_date_formatted, []).append(mapped_score)
+                            except Exception as date_err:  # Catch broader errors during parsing/formatting
                                 logger.debug(
-                                    f"Invalid date format '{pub_date_str}' in article (FinBERT).")
+                                    f"Invalid date format or conversion error for '{pub_date_str}' in article (FinBERT): {date_err}")
+                        # --- END MODIFIED DATE HANDLING ---
 
                     except Exception as e:
                         # Avoid long tracebacks in logs
@@ -243,15 +250,17 @@ class SentimentAnalysis:
         """Helper function to create the daily sentiment DataFrame."""
         daily_data = []
         if daily_scores:
+            # date_str is now YYYY-MM-DD
             for date_str in sorted(daily_scores.keys()):
                 scores = daily_scores[date_str]
                 daily_avg = np.mean(scores) if scores else 0.0
                 try:
+                    # Convert the YYYY-MM-DD string to datetime
                     daily_data.append({'Date': pd.to_datetime(
                         date_str), 'Daily_Sentiment': daily_avg})
                 except ValueError:
                     logger.warning(
-                        f"Could not convert date string '{date_str}' for daily sentiment DataFrame.")
+                        f"Could not convert date string '{date_str}' back to datetime for daily sentiment DataFrame.")
 
         sentiment_df = pd.DataFrame(daily_data) if daily_data else None
         if sentiment_df is not None and not sentiment_df.empty:
@@ -273,10 +282,13 @@ class SentimentAnalysis:
             logger.info("No articles provided for sentiment analysis.")
             return [], 0.0, None
 
-        if method.lower() == 'finbert':
+        # Ensure method is lowercase for comparison
+        method = method.lower()
+
+        if method == 'finbert':
             logger.info("Using FinBERT method for sentiment analysis.")
             return self._analyze_sentiment_finbert(articles)
-        elif method.lower() == 'vader':
+        elif method == 'vader':
             logger.info("Using VADER method for sentiment analysis.")
             if not self.vader_available:
                 st.warning(

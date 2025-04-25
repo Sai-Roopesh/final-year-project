@@ -48,26 +48,41 @@ class MainAnalyzer:
         """
         Runs the full analysis pipeline for a given stock symbol.
         """
-        # ... (Implementation remains the same as artifact main_analyser_ml_call_fix) ...
-        # This function correctly gathers all results into the 'results' dictionary.
         logger.info(f"--- Starting Full Analysis for {symbol} ---")
-        results = {'symbol': symbol}
+        # --- ADDED: Default currency and store original input ---
+        results = {'symbol': symbol, 'currency': 'USD'}  # Default to USD
+        original_user_input = advanced_params.get('company_input', symbol)
+        # --- END ADDED ---
 
         # 1. Core Data Fetching
         logger.info("Fetching core data...")
+        # Ensure dates are timezone-naive datetime objects
         if not isinstance(start_date, datetime):
             start_date = datetime.combine(start_date, datetime.min.time())
         if not isinstance(end_date, datetime):
             end_date = datetime.combine(end_date, datetime.max.time())
+        start_date = start_date.replace(tzinfo=None)
+        end_date = end_date.replace(tzinfo=None)
+
         stock_data = self.data_fetcher.load_stock_data(
             symbol, start_date, end_date)
         stock_info = self.data_fetcher.load_stock_info(symbol)
         results['stock_data'] = stock_data
         results['stock_info'] = stock_info
+
+        # --- ADDED: Extract and store currency ---
+        if stock_info and isinstance(stock_info, dict) and 'currency' in stock_info:
+            results['currency'] = stock_info['currency']
+            logger.info(f"Detected currency: {results['currency']}")
+        else:
+            logger.warning(
+                f"Currency information not found for {symbol}. Defaulting to {results['currency']}.")
+        # --- END ADDED ---
+
         if stock_data is None or stock_data.empty:
             logger.error(f"Core data fetching failed for {symbol}.")
             st.error(f"Failed fetch historical stock data for {symbol}.")
-            return results
+            return results  # Return results dict even on failure
 
         # 2. Technical Analysis
         logger.info("Running technical analysis...")
@@ -78,29 +93,63 @@ class MainAnalyzer:
 
         # 3. News & Sentiment
         logger.info("Fetching news and analyzing sentiment...")
-        news_days_back = min(90, (end_date - start_date).days +
-                             1) if start_date and end_date else 90
-        news_start_date = end_date - \
-            timedelta(days=news_days_back) if end_date else datetime.now(
-            ) - timedelta(days=90)
-        news_end_date = end_date if end_date else datetime.now()
-        news_articles = self.data_fetcher.load_news(
-            symbol, news_start_date, news_end_date)
+        news_days_back = min(config.NEWS_DAYS_LIMIT,
+                             (end_date - start_date).days + 1)
+        news_start_date = end_date - timedelta(days=news_days_back)
+        news_end_date = end_date
+
+        # --- Determine NewsAPI Query ---
+        newsapi_query = symbol  # Default to symbol
+        if stock_info and stock_info.get('longName'):
+            newsapi_query = stock_info['longName']  # Prefer company name
+            logger.info(
+                f"Using company name '{newsapi_query}' for NewsAPI query.")
+        elif original_user_input != symbol:  # If original input was different
+            newsapi_query = original_user_input
+            logger.info(
+                f"Using original user input '{newsapi_query}' for NewsAPI query.")
+        else:  # If symbol was input and no longName, remove suffixes
+            newsapi_query = symbol.replace('.NS', '').replace('.BO', '')
+            logger.info(
+                f"Using base symbol '{newsapi_query}' for NewsAPI query.")
+        # --- End NewsAPI Query Determination ---
+
+        # 3a. NewsAPI News & Sentiment
+        newsapi_articles = self.data_fetcher.load_news(
+            newsapi_query, news_start_date, news_end_date
+        )
         sentiment_method_selected = advanced_params.get(
             'sentiment_method', 'vader').lower()
         logger.info(f"Selected sentiment method: {sentiment_method_selected}")
-        analyzed_articles, avg_sentiment, sentiment_df = self.sentiment_analyzer.analyze_sentiment(
-            news_articles, method=sentiment_method_selected)
-        results['analyzed_articles'] = analyzed_articles
-        results['avg_sentiment'] = avg_sentiment
-        results['sentiment_df'] = sentiment_df
+        newsapi_analyzed, newsapi_avg_sent, newsapi_sent_df = self.sentiment_analyzer.analyze_sentiment(
+            newsapi_articles, method=sentiment_method_selected
+        )
+        results['newsapi_analyzed_articles'] = newsapi_analyzed
+        results['newsapi_avg_sentiment'] = newsapi_avg_sent
+        results['newsapi_sentiment_df'] = newsapi_sent_df
+        # Keep overall from NewsAPI
+        results['avg_sentiment'] = newsapi_avg_sent
         results['sentiment_method_used'] = sentiment_method_selected
+
+        # 3b. yfinance News & Sentiment
+        logger.info("Fetching yfinance news and analyzing sentiment...")
+        yfinance_articles = self.data_fetcher.load_yfinance_news(symbol)
+        yfinance_analyzed, yfinance_avg_sent, yfinance_sent_df = self.sentiment_analyzer.analyze_sentiment(
+            yfinance_articles, method=sentiment_method_selected
+        )
+        results['yfinance_analyzed_articles'] = yfinance_analyzed
+        results['yfinance_avg_sentiment'] = yfinance_avg_sent
+        results['yfinance_sentiment_df'] = yfinance_sent_df
 
         # 4. Forecasting (Prophet)
         logger.info("Generating Prophet forecast...")
         forecast_days = advanced_params.get('prediction_days', 30)
         results['prophet_forecast_data'] = self.forecaster.prophet_forecast(
-            stock_data, forecast_days, sentiment_df)
+            stock_data,
+            forecast_days,
+            results.get('newsapi_sentiment_df'),
+            results.get('yfinance_sentiment_df')
+        )
 
         # 5. Financial Data
         if run_advanced.get('show_dividends'):
@@ -120,7 +169,7 @@ class MainAnalyzer:
         results['analyst_info'] = self.data_fetcher.get_analyst_recommendations(
             symbol)
 
-        # --- Optional Economic Indicators ---
+        # 6. Optional Economic Indicators
         results['economic_data'] = None
         run_economic_flag = run_advanced.get('run_economic', False)
         logger.info(
@@ -146,7 +195,7 @@ class MainAnalyzer:
         else:
             logger.info("Skipping economic indicators fetch (flag was False).")
 
-        # --- Optional Advanced Analyses ---
+        # 7. Optional Advanced Analyses
         results['portfolio_result'] = None
         if run_advanced.get('run_portfolio'):
             logger.info("Running portfolio simulation...")
@@ -158,6 +207,7 @@ class MainAnalyzer:
             else:
                 logger.warning(
                     "Portfolio simulation skipped: No symbols provided.")
+
         results['correlation_matrix'] = None
         if run_advanced.get('run_correlation'):
             logger.info("Running correlation analysis...")
@@ -169,6 +219,7 @@ class MainAnalyzer:
             else:
                 logger.warning(
                     "Correlation analysis skipped: Less than 2 symbols provided.")
+
         results['ml_results'] = None
         selected_models_list = advanced_params.get('selected_models', [])
         if run_advanced.get('run_ml_section') and selected_models_list:
@@ -179,6 +230,7 @@ class MainAnalyzer:
         else:
             logger.info(
                 "ML prediction skipped (ML section not enabled or no models selected).")
+
         results['esg_scores'] = None
         if run_advanced.get('run_esg'):
             logger.info("Fetching ESG scores...")
@@ -187,18 +239,11 @@ class MainAnalyzer:
         logger.info(f"--- Full Analysis Complete for {symbol} ---")
         return results
 
-    # --- generate_chat_response (MODIFIED) ---
-
-    def generate_chat_response(self, user_query: str, prepared_context_dict: Dict[str, Any]) -> str:
+    # --- generate_chat_response (MODIFIED to use updated context prep) ---
+    def generate_chat_response(self, user_query: str, analysis_results_dict: Dict[str, Any]) -> str:
         """
-        Generates a response from Gemini using the PREPARED context dictionary.
-
-        Args:
-            user_query (str): The user's question.
-            prepared_context_dict (Dict[str, Any]): The dictionary returned by utils.prepare_llm_context.
-
-        Returns:
-            str: The generated response from the LLM.
+        Generates a response from Gemini using the PREPARED context dictionary
+        derived from the analysis results.
         """
         if not self.gemini_client:
             logger.error(
@@ -206,54 +251,70 @@ class MainAnalyzer:
             return "Sorry, the AI Chat Assistant is currently unavailable."
 
         logger.info(
-            f"Generating chat response for query: '{user_query[:50]}...' using prepared context.")
+            f"Generating chat response for query: '{user_query[:50]}...'")
 
-        if not prepared_context_dict or 'symbol' not in prepared_context_dict:
-            logger.error("Prepared context dict is missing or invalid.")
+        # Prepare context using the utility function
+        prepared_context_dict = utils.prepare_llm_context(
+            analysis_results_dict)
+
+        if not prepared_context_dict or 'symbol' not in prepared_context_dict or prepared_context_dict.get('error'):
+            logger.error(
+                f"Prepared context dict is missing, invalid, or contains an error: {prepared_context_dict}")
             return "Sorry, I don't have the necessary analysis context to answer that."
 
         # --- Build the prompt string from the prepared context dictionary ---
         symbol_for_prompt = prepared_context_dict.get(
             'symbol', 'the selected stock')
         context_lines = []
-        for key, value in prepared_context_dict.items():
-            # Skip symbol (already in system prompt) and None values
-            if key == 'symbol' or value is None:
-                continue
+        context_sections = [
+            'company_summary', 'key_ratios', 'latest_technicals', 'technical_patterns',
+            # Added yfinance sentiment
+            'fundamental_summary', 'average_news_sentiment', 'yfinance_average_sentiment',
+            'prophet_forecast_summary', 'ml_prediction_summary', 'analyst_ratings_summary',
+            'esg_scores', 'earnings_summary', 'latest_economic_data', 'derived_signals'
+        ]
+        # Get currency for prompt formatting if needed
+        currency_code = analysis_results_dict.get('currency', 'USD')
 
-            # Format keys nicely
+        for key in context_sections:
+            value = prepared_context_dict.get(key)
+            if value is None:
+                continue  # Skip empty sections
+
             title = key.replace('_', ' ').title()
+            if key == 'yfinance_average_sentiment':
+                title = "Average News Sentiment (YFinance)"
             context_lines.append(f"\n**{title}:**")
 
-            # Format values based on type
             if isinstance(value, dict):
-                # Format dictionary items
-                items_str = "".join(
-                    [f"\n- {k.replace('_', ' ').title()}: {str(v)[:150]}{'...' if len(str(v)) > 150 else ''}" for k, v in value.items()])
+                items_str = ""
+                for k, v in value.items():
+                    sub_key_title = k.replace('_', ' ').title()
+                    v_str = str(v)
+                    v_display = f"{v_str[:150]}{'...' if len(v_str) > 150 else ''}"
+                    items_str += f"\n- {sub_key_title}: {v_display}"
                 context_lines.append(items_str if items_str else "\n- N/A")
             elif isinstance(value, list):
-                # Format list items
                 if not value:
                     context_lines.append("\n- N/A")
                 else:
-                    context_lines.append("".join(
-                        # Show first 5
-                        [f"\n- {str(item)[:150]}{'...' if len(str(item)) > 150 else ''}" for item in value[:5]]))
+                    items_str = "".join(
+                        [f"\n- {str(item)[:150]}{'...' if len(str(item)) > 150 else ''}" for item in value[:5]])
+                    context_lines.append(items_str)
                     if len(value) > 5:
-                        context_lines.append("\n- ... (more items)")
+                        context_lines.append("\n- ... (more items exist)")
             else:
-                # Format other types as string (truncate long strings)
                 v_str = str(value)
-                # Increased truncation limit slightly
                 context_lines.append(
                     f"\n{v_str[:300]}{'...' if len(v_str) > 300 else ''}")
 
         context_detail_string = "".join(context_lines)
         # --- End prompt building ---
 
-        # Define the system prompt (using your advisor persona)
+        # Define the system prompt
         system_prompt = (
-            f"You are a seasoned financial advisor specializing in stock analysis for {symbol_for_prompt}.\n"
+            # Added currency code
+            f"You are a seasoned financial advisor specializing in stock analysis for {symbol_for_prompt} ({currency_code}).\n"
             f"Your objective is to analyze the provided context data and offer clear, actionable financial advice and recommendations. "
             f"Answer the user's query by examining key data points and providing guidance (e.g., buy, sell, or hold), along with supporting reasoning.\n\n"
             f"**Important Disclaimer:** The advice and recommendations you provide are based solely on the provided context data and are not personalized financial advice. "
@@ -261,15 +322,18 @@ class MainAnalyzer:
             f"**Guidelines for Responding to Common Queries:**\n"
             f"- For questions such as 'Should I buy this stock?', structure your response as follows:\n"
             f"    1. **Fundamentals:** Summarize key trends (e.g., revenue growth or decline, profit changes) from the 'Fundamental Summary'.\n"
-            f"    2. **Technicals:** Report the latest closing price and highlight significant indicators or patterns from the 'Technical Analysis' section.\n"
-            f"    3. **Sentiment:** Present the 'Average News Sentiment' and any notable trends from the sentiment analysis.\n"
-            f"    4. **Forecast & ML Predictions:** Describe the forecast trend and the model’s predictions for the next day's return, emphasizing strong signals.\n"
-            f"    5. **Actionable Recommendation:** Based on the above data, provide a clear recommendation (e.g., buy, sell, or hold) with supporting evidence.\n"
-            f"    6. **Closing Disclaimer:** Remind the user that this guidance is solely based on the provided data and does not constitute direct financial advice.\n"
+            # Mention currency
+            f"    2. **Technicals:** Report the latest closing price (in {currency_code}) and highlight significant indicators or patterns from the 'Latest Technicals' and 'Technical Patterns' sections.\n"
+            f"    3. **Sentiment:** Present the 'Average News Sentiment' from both sources (NewsAPI, YFinance) and any notable trends.\n"
+            f"    4. **Forecast & ML Predictions:** Describe the forecast trend ('Prophet Forecast Summary') and the model’s predictions ('ML Prediction Summary') for the next day's return, emphasizing strong signals.\n"
+            f"    5. **Analyst View:** Include the 'Analyst Ratings Summary' consensus.\n"
+            f"    6. **Actionable Recommendation:** Based on the synthesis of the above data, provide a clear recommendation (e.g., buy, sell, or hold) with supporting evidence from the context.\n"
+            f"    7. **Closing Disclaimer:** Remind the user that this guidance is solely based on the provided data and does not constitute direct financial advice.\n"
             f"- For specific data inquiries (e.g., 'What was the revenue last quarter?'), answer directly using the context provided.\n\n"
             f"Your responses should be assertive, structured, and professional. Use bullet points or numbered lists where appropriate.\n\n"
-            f"--- START CONTEXT DATA FOR {symbol_for_prompt} ---\n"
-            f"{context_detail_string}"  # Append the formatted context details
+            # Added currency code
+            f"--- START CONTEXT DATA FOR {symbol_for_prompt} ({currency_code}) ---\n"
+            f"{context_detail_string}"
             f"\n--- END CONTEXT DATA ---"
         )
 
